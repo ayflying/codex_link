@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.vite/
+.env
+data/
+data-local/
+**/data-dev/
+*.log
+
+# Local Go build and end-to-end test artifacts.
+*.exe
+tmp-*
+release/**/codex-relay-server-linux-amd64
+*.tsbuildinfo

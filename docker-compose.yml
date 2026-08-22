@@ -1,0 +1,18 @@
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: Dockerfile.relay
+    environment:
+      PORT: "8787:8787"
+      DATA_DIR: /data
+      WEB_DIR: /app/web
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+    volumes:
+      - codex-relay-data:/data
+    ports:
+      - "${RELAY_PORT:-8787}:8787"
+    restart: unless-stopped
+
+volumes:
+  codex-relay-data:

@@ -1,0 +1,12 @@
+.git
+.codegraph
+node_modules
+release
+data
+data-*
+apps/web/dist
+services/*/dist
+*.exe
+*.log
+*.png
+tmp-*
