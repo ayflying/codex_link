@@ -23,14 +23,13 @@ echo "$CR_PAT" | docker login ghcr.io -u ayflying --password-stdin
 默认访问地址为：
 
 ```text
-http://<服务端地址>:8787
+http://<服务端地址>:18787
 ```
 
 首次在网页创建账号。建议创建完第一个账号后，把 `docker-compose.yml` 同目录的 `.env` 设置为：
 
 ```text
 ALLOW_REGISTRATION=false
-RELAY_PORT=8787
 ```
 
 配置完成后重新拉取并重建容器：
@@ -39,7 +38,7 @@ RELAY_PORT=8787
 docker compose up -d --pull always
 ```
 
-服务端数据保存在 Docker volume `codex-relay-data`，包括账号密码哈希、设备令牌、同步的会话元数据、最近事件和图片附件。它不保存本机 Codex/CCS/API Key。
+服务端数据保存在 Docker volume `data`，包括账号密码哈希、设备令牌、同步的会话元数据、最近事件和图片附件。它不保存本机 Codex/CCS/API Key。
 
 ## 构建客户端
 

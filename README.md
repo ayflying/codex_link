@@ -6,6 +6,8 @@
 
 中心服务端以 Docker Compose 部署；运行 Codex 的电脑只运行 Go 客户端，主动通过 WebSocket 连接服务端。网页和客户端登录同一个账号后会自动同步。完整部署说明见 [docs/RELAY.md](docs/RELAY.md)。
 
+中心服务端默认通过宿主机 `18787` 端口访问，Compose 会自动拉取 `ghcr.io/ayflying/codex_link:latest` 镜像。
+
 旧的单机 Go 便携服务仍保留，适合仅在一台电脑的局域网直接使用。
 
 ## 旧单机运行方式：Go 便携服务
@@ -108,7 +110,7 @@ Authorization: Bearer <token>
 
 ## 安全边界
 
-不要把 `8787` 直接暴露到公网。推荐只通过 Tailscale IP 访问，并使用 Tailscale ACL 和 Windows 防火墙限制访问设备。
+不要把中心服务端的 `18787` 或单机服务的 `8787` 直接暴露到公网。推荐只通过 Tailscale IP 访问，并使用 Tailscale ACL 和防火墙限制访问设备。
 
 ## 旧实现
 
