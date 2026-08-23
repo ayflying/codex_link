@@ -483,6 +483,9 @@ func (g *clientGUI) handleAgentExited() {
 	g.updateConnectButton()
 	setWindowText(g.statusLabel, "客户端已停止")
 	setWindowText(g.detailLabel, detail)
+	if strings.HasPrefix(detail, "后台客户端异常退出:") {
+		messageBox(g.hwnd, detail, "Codex Link 客户端启动失败", win.MB_ICONERROR|win.MB_OK)
+	}
 }
 
 func (g *clientGUI) handlePollState() {
