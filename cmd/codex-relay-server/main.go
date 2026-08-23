@@ -623,9 +623,9 @@ func newRelayServer(uploadDir, webDir string) (*relayServer, error) {
 		agents:         map[string]*agentPeer{},
 		p2pBrowsers:    map[string]*p2pBrowser{},
 		iceServers:     splitList(env("WEBRTC_STUN_SERVERS", "")),
-		stunPort:       env("WEBRTC_STUN_PORT", "3478"),
+		stunPort:       env("WEBRTC_STUN_PORT", "8787"),
 		stunHost:       env("WEBRTC_STUN_PUBLIC_HOST", ""),
-		stunPublicPort: env("WEBRTC_STUN_PUBLIC_PORT", env("WEBRTC_STUN_PORT", "3478")),
+		stunPublicPort: env("WEBRTC_STUN_PUBLIC_PORT", env("WEBRTC_STUN_PORT", "8787")),
 		p2pOnly:        strings.EqualFold(env("WEBRTC_P2P_ONLY", "false"), "true"),
 		upgrader: websocket.Upgrader{CheckOrigin: func(request *http.Request) bool {
 			origin := request.Header.Get("Origin")

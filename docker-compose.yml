@@ -30,7 +30,7 @@ services:
       UPLOAD_DIR: /data/uploads
       WEB_DIR: /app/web
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
-      WEBRTC_STUN_PORT: "3478"
+      WEBRTC_STUN_PORT: "8787"
       WEBRTC_STUN_PUBLIC_PORT: "18787"
       WEBRTC_STUN_PUBLIC_HOST: ""
       WEBRTC_P2P_ONLY: "false"
@@ -38,7 +38,7 @@ services:
       - data:/data
     ports:
       - "18787:8787/tcp"
-      - "18787:3478/udp"
+      - "18787:8787/udp"
     restart: unless-stopped
 
 volumes:

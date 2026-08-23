@@ -53,22 +53,22 @@ docker compose up -d --pull always
 
 网页选择在线设备后，会通过已登录网页会话连接 `/api/p2p/ws`，relay 只转发 SDP/ICE 信令。浏览器和 agent 建立 WebRTC DataChannel 后，线程、会话命令、事件和图片分块上传都走直连；页面状态栏显示“P2P 直连”。如果浏览器不支持 WebRTC、UDP 打洞失败、STUN 不可达或 DataChannel 中断，页面状态会显示“服务端中转”，自动恢复原来的 HTTP/SSE/WebSocket 路径。
 
-relay 自带一个 STUN-only UDP 监听器，容器端口为 `3478`，Compose 将它映射到宿主机 UDP `18787`，与网页 TCP `18787` 共用端口号。TCP 和 UDP 使用独立的端口空间，二者不会冲突。它只响应 STUN Binding 请求，返回请求方的公网映射地址，不接收、转发或中继 WebRTC DataChannel 数据，因此这个端口不会产生 TURN 中转流量。公网防火墙需要同时放行 `18787/tcp` 和 `18787/udp`。
+relay 自带一个 STUN-only UDP 监听器，容器端口为 `8787`，Compose 将它映射到宿主机 UDP `18787`，与网页 TCP `18787` 共用端口号。TCP 和 UDP 使用独立的端口空间，二者不会冲突。它只响应 STUN Binding 请求，返回请求方的公网映射地址，不接收、转发或中继 WebRTC DataChannel 数据，因此这个端口不会产生 TURN 中转流量。公网防火墙需要同时放行 `18787/tcp` 和 `18787/udp`。
 
 以下是 relay 的公开编排配置，不需要放入 `.env`。需要修改 STUN 地址、端口映射、公网地址或 P2P-only 策略时，直接编辑 `docker-compose.yml` 中 relay 的 `environment` 和 `ports`：
 
 ```yaml
 environment:
-  WEBRTC_STUN_PORT: "3478"
+  WEBRTC_STUN_PORT: "8787"
   WEBRTC_STUN_PUBLIC_PORT: "18787"
   WEBRTC_STUN_PUBLIC_HOST: ""
   WEBRTC_P2P_ONLY: "false"
 ports:
   - "18787:8787/tcp"
-  - "18787:3478/udp"
+  - "18787:8787/udp"
 ```
 
-`WEBRTC_STUN_PUBLIC_PORT` 是宿主机 UDP 映射端口，`WEBRTC_STUN_PORT` 是容器内监听端口；当前宿主机 TCP 网页端口和 UDP STUN 端口都使用 `18787`。如果修改宿主机端口，需要同步修改 `WEBRTC_STUN_PUBLIC_PORT` 和 `ports` 中的 TCP/UDP 映射。`WEBRTC_STUN_PUBLIC_HOST` 留空时，relay 会从网页请求的 Host 自动生成候选地址。当前默认只使用 relay 自己的 STUN-only 服务；只有明确通过环境变量 `WEBRTC_STUN_SERVERS` 增加地址时，才会额外使用外部 STUN 服务。
+`WEBRTC_STUN_PUBLIC_PORT` 是宿主机 UDP 映射端口，`WEBRTC_STUN_PORT` 是容器内监听端口；当前容器内 TCP 网页服务和 UDP STUN 都使用 `8787`，宿主机也都使用 `18787`。如果修改宿主机端口，需要同步修改 `WEBRTC_STUN_PUBLIC_PORT` 和 `ports` 中的 TCP/UDP 映射；两条映射不能合并，否则未标注协议的映射只会发布 TCP。`WEBRTC_STUN_PUBLIC_HOST` 留空时，relay 会从网页请求的 Host 自动生成候选地址。当前默认只使用 relay 自己的 STUN-only 服务；只有明确通过环境变量 `WEBRTC_STUN_SERVERS` 增加地址时，才会额外使用外部 STUN 服务。
 
 默认 `WEBRTC_P2P_ONLY=false`，打洞失败时仍兼容服务端 HTTP/SSE/WebSocket 回退。设置为 `true` 后，业务请求、事件流、图片上传以及 agent 的事件/会话通知在 P2P 未建立或中断时直接失败或丢弃，绝不回退到服务端中转；网页登录、设备发现和 P2P 信令仍需要通过 relay 完成。项目没有配置 TURN，无法打洞的网络在该模式下不可用。
 
