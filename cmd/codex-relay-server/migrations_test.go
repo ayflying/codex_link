@@ -22,7 +22,7 @@ func TestLoadSQLMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load migrations: %v", err)
 	}
-	if len(migrations) != 1 || migrations[0].version != 1 || migrations[0].name != "init" {
+	if len(migrations) != 2 || migrations[0].version != 1 || migrations[0].name != "init" || migrations[1].version != 2 || migrations[1].name != "user_admin" {
 		t.Fatalf("unexpected migrations: %#v", migrations)
 	}
 	if len(migrations[0].statements) != 7 {
@@ -30,6 +30,9 @@ func TestLoadSQLMigrations(t *testing.T) {
 	}
 	if len(migrations[0].checksum) != 64 || strings.Trim(migrations[0].checksum, "0123456789abcdef") != "" {
 		t.Fatalf("unexpected migration checksum: %q", migrations[0].checksum)
+	}
+	if len(migrations[1].statements) != 2 || len(migrations[1].checksum) != 64 || strings.Trim(migrations[1].checksum, "0123456789abcdef") != "" {
+		t.Fatalf("unexpected user admin migration: %#v", migrations[1])
 	}
 }
 

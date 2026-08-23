@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -16,6 +17,8 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 )
+
+const userMutationLockName = "codex_link_user_mutation"
 
 type mysqlRelayStore struct {
 	db            *sql.DB
@@ -103,12 +106,28 @@ func (s *mysqlRelayStore) register(username, password string) (User, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	user := User{ID: randomID(), Username: username, Salt: randomID(), Iterations: passwordIterations, CreatedAt: now, UpdatedAt: now}
 	user.PasswordHash = hashPassword(password, user.Salt, user.Iterations)
-	_, err := s.db.Exec(`INSERT INTO users (id, username, username_key, password_hash, salt, iterations, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		user.ID, user.Username, strings.ToLower(username), user.PasswordHash, user.Salt, user.Iterations, user.CreatedAt, user.UpdatedAt)
-	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
-			return User{}, errors.New("用户名已存在")
+	err := s.withUserMutationLock(func(ctx context.Context, conn *sql.Conn) error {
+		tx, err := conn.BeginTx(ctx, nil)
+		if err != nil {
+			return err
 		}
+		defer tx.Rollback()
+		var userCount int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&userCount); err != nil {
+			return err
+		}
+		user.IsAdmin = userCount == 0
+		_, err = tx.ExecContext(ctx, `INSERT INTO users (id, username, username_key, is_admin, password_hash, salt, iterations, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			user.ID, user.Username, strings.ToLower(username), user.IsAdmin, user.PasswordHash, user.Salt, user.Iterations, user.CreatedAt, user.UpdatedAt)
+		if err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+				return errors.New("用户名已存在")
+			}
+			return err
+		}
+		return tx.Commit()
+	})
+	if err != nil {
 		return User{}, err
 	}
 	return user, nil
@@ -116,8 +135,8 @@ func (s *mysqlRelayStore) register(username, password string) (User, error) {
 
 func (s *mysqlRelayStore) authenticate(username, password string) (User, bool) {
 	var user User
-	err := s.db.QueryRow(`SELECT id, username, password_hash, salt, iterations, created_at, updated_at FROM users WHERE username_key = ?`, strings.ToLower(strings.TrimSpace(username))).Scan(
-		&user.ID, &user.Username, &user.PasswordHash, &user.Salt, &user.Iterations, &user.CreatedAt, &user.UpdatedAt)
+	err := s.db.QueryRow(`SELECT id, username, is_admin, password_hash, salt, iterations, created_at, updated_at FROM users WHERE username_key = ?`, strings.ToLower(strings.TrimSpace(username))).Scan(
+		&user.ID, &user.Username, &user.IsAdmin, &user.PasswordHash, &user.Salt, &user.Iterations, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil || user.PasswordHash == "" {
 		return User{}, false
 	}
@@ -131,9 +150,129 @@ func (s *mysqlRelayStore) authenticate(username, password string) (User, bool) {
 
 func (s *mysqlRelayStore) userByID(userID string) (User, bool) {
 	var user User
-	err := s.db.QueryRow(`SELECT id, username, password_hash, salt, iterations, created_at, updated_at FROM users WHERE id = ?`, userID).Scan(
-		&user.ID, &user.Username, &user.PasswordHash, &user.Salt, &user.Iterations, &user.CreatedAt, &user.UpdatedAt)
+	err := s.db.QueryRow(`SELECT id, username, is_admin, password_hash, salt, iterations, created_at, updated_at FROM users WHERE id = ?`, userID).Scan(
+		&user.ID, &user.Username, &user.IsAdmin, &user.PasswordHash, &user.Salt, &user.Iterations, &user.CreatedAt, &user.UpdatedAt)
 	return user, err == nil
+}
+
+func (s *mysqlRelayStore) withUserMutationLock(fn func(context.Context, *sql.Conn) error) error {
+	ctx := context.Background()
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	var locked int
+	if err := conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, 30)", userMutationLockName).Scan(&locked); err != nil {
+		return err
+	}
+	if locked != 1 {
+		return errors.New("用户管理操作正在进行，请稍后重试")
+	}
+	defer func() { _, _ = conn.ExecContext(ctx, "SELECT RELEASE_LOCK(?)", userMutationLockName) }()
+	return fn(ctx, conn)
+}
+
+func (s *mysqlRelayStore) listAdminUsers() ([]User, error) {
+	rows, err := s.db.Query(`SELECT id, username, is_admin, created_at, updated_at FROM users ORDER BY created_at ASC, id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	users := []User{}
+	for rows.Next() {
+		var user User
+		if err := rows.Scan(&user.ID, &user.Username, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt); err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+	}
+	return users, rows.Err()
+}
+
+func (s *mysqlRelayStore) setUserAdmin(actorID, userID string, isAdmin bool) error {
+	return s.withUserMutationLock(func(ctx context.Context, conn *sql.Conn) error {
+		tx, err := conn.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if err := ensureAdmin(tx, ctx, actorID); err != nil {
+			return err
+		}
+		if actorID == userID {
+			return errors.New("当前登录账号不能在系统管理中修改")
+		}
+		var currentAdmin bool
+		if err := tx.QueryRowContext(ctx, `SELECT is_admin FROM users WHERE id = ?`, userID).Scan(&currentAdmin); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return errors.New("用户不存在")
+			}
+			return err
+		}
+		if currentAdmin && !isAdmin {
+			var adminCount int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE is_admin = TRUE`).Scan(&adminCount); err != nil {
+				return err
+			}
+			if adminCount <= 1 {
+				return errors.New("系统至少需要一名管理员")
+			}
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE users SET is_admin = ?, updated_at = ? WHERE id = ?`, isAdmin, time.Now().UTC().Format(time.RFC3339Nano), userID)
+		if err != nil {
+			return err
+		}
+		return tx.Commit()
+	})
+}
+
+func (s *mysqlRelayStore) deleteAdminUser(actorID, userID string) error {
+	return s.withUserMutationLock(func(ctx context.Context, conn *sql.Conn) error {
+		tx, err := conn.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if err := ensureAdmin(tx, ctx, actorID); err != nil {
+			return err
+		}
+		if actorID == userID {
+			return errors.New("当前登录账号不能在系统管理中修改")
+		}
+		result, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, userID)
+		if err != nil {
+			return err
+		}
+		if count, _ := result.RowsAffected(); count == 0 {
+			return errors.New("用户不存在")
+		}
+		var adminCount int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE is_admin = TRUE`).Scan(&adminCount); err != nil {
+			return err
+		}
+		if adminCount == 0 {
+			_, err = tx.ExecContext(ctx, `UPDATE users SET is_admin = TRUE WHERE id = (SELECT id FROM (SELECT id FROM users ORDER BY created_at ASC, id ASC LIMIT 1) AS oldest_user)`)
+			if err != nil {
+				return err
+			}
+		}
+		return tx.Commit()
+	})
+}
+
+func ensureAdmin(tx *sql.Tx, ctx context.Context, userID string) error {
+	var isAdmin bool
+	if err := tx.QueryRowContext(ctx, `SELECT is_admin FROM users WHERE id = ?`, userID).Scan(&isAdmin); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("当前账号不是管理员")
+		}
+		return err
+	}
+	if !isAdmin {
+		return errors.New("当前账号不是管理员")
+	}
+	return nil
 }
 
 func (s *mysqlRelayStore) changePassword(userID, current, next string) error {
@@ -162,8 +301,8 @@ func (s *mysqlRelayStore) removeWebSession(token string) {
 
 func (s *mysqlRelayStore) userForWebSession(token string) (User, bool) {
 	var user User
-	err := s.db.QueryRow(`SELECT u.id, u.username, u.password_hash, u.salt, u.iterations, u.created_at, u.updated_at FROM web_sessions ws JOIN users u ON u.id = ws.user_id WHERE ws.token_hash = ? AND ws.expires_at > UTC_TIMESTAMP(6)`, hashToken(token)).Scan(
-		&user.ID, &user.Username, &user.PasswordHash, &user.Salt, &user.Iterations, &user.CreatedAt, &user.UpdatedAt)
+	err := s.db.QueryRow(`SELECT u.id, u.username, u.is_admin, u.password_hash, u.salt, u.iterations, u.created_at, u.updated_at FROM web_sessions ws JOIN users u ON u.id = ws.user_id WHERE ws.token_hash = ? AND ws.expires_at > UTC_TIMESTAMP(6)`, hashToken(token)).Scan(
+		&user.ID, &user.Username, &user.IsAdmin, &user.PasswordHash, &user.Salt, &user.Iterations, &user.CreatedAt, &user.UpdatedAt)
 	return user, err == nil
 }
 
@@ -231,8 +370,8 @@ func (s *mysqlRelayStore) userForAPIToken(token string) (User, accessTokenRecord
 	hash := hashToken(token)
 	var user User
 	var record accessTokenRecord
-	err := s.db.QueryRow(`SELECT u.id, u.username, u.password_hash, u.salt, u.iterations, u.created_at, u.updated_at, t.id, t.user_id, t.name, t.token_value, t.token_hash, t.token_prefix, t.created_at, t.updated_at, COALESCE(t.refreshed_at, ''), COALESCE(t.last_used_at, ''), COALESCE(t.last_used_device_id, '') FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ?`, hash).Scan(
-		&user.ID, &user.Username, &user.PasswordHash, &user.Salt, &user.Iterations, &user.CreatedAt, &user.UpdatedAt, &record.ID, &record.UserID, &record.Name, &record.Value, &record.Hash, &record.Prefix, &record.CreatedAt, &record.UpdatedAt, &record.RefreshedAt, &record.LastUsedAt, &record.LastUsedDeviceID)
+	err := s.db.QueryRow(`SELECT u.id, u.username, u.is_admin, u.password_hash, u.salt, u.iterations, u.created_at, u.updated_at, t.id, t.user_id, t.name, t.token_value, t.token_hash, t.token_prefix, t.created_at, t.updated_at, COALESCE(t.refreshed_at, ''), COALESCE(t.last_used_at, ''), COALESCE(t.last_used_device_id, '') FROM access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ?`, hash).Scan(
+		&user.ID, &user.Username, &user.IsAdmin, &user.PasswordHash, &user.Salt, &user.Iterations, &user.CreatedAt, &user.UpdatedAt, &record.ID, &record.UserID, &record.Name, &record.Value, &record.Hash, &record.Prefix, &record.CreatedAt, &record.UpdatedAt, &record.RefreshedAt, &record.LastUsedAt, &record.LastUsedDeviceID)
 	if err != nil {
 		return User{}, accessTokenRecord{}, false
 	}

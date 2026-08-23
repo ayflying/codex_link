@@ -101,6 +101,7 @@ type envelope struct {
 type User struct {
 	ID                string `json:"id"`
 	Username          string `json:"username"`
+	IsAdmin           bool   `json:"isAdmin"`
 	PasswordHash      string `json:"passwordHash"`
 	Salt              string `json:"salt"`
 	Iterations        int    `json:"iterations"`
@@ -691,6 +692,8 @@ func main() {
 	mux.HandleFunc("/api/auth/token", server.authToken)
 	mux.HandleFunc("/api/auth/tokens", server.authTokens)
 	mux.HandleFunc("/api/auth/tokens/", server.authTokenItem)
+	mux.HandleFunc("/api/admin/users", server.adminUsers)
+	mux.HandleFunc("/api/admin/users/", server.adminUserItem)
 	mux.HandleFunc("/api/agent/login", server.agentLogin)
 	mux.HandleFunc("/api/agent/validate", server.agentValidate)
 	mux.HandleFunc("/api/agent/ws", server.agentWebSocket)
@@ -723,7 +726,9 @@ func (s *relayServer) authStatus(w http.ResponseWriter, request *http.Request) {
 	}
 	writeJSON(w, map[string]interface{}{
 		"authenticated":    ok,
+		"userId":           user.ID,
 		"username":         user.Username,
+		"isAdmin":          user.IsAdmin,
 		"registrationOpen": strings.EqualFold(env("ALLOW_REGISTRATION", "true"), "true"),
 		"tokens":           tokenListJSON(records),
 		"apiToken":         map[string]interface{}{"enabled": len(records) > 0, "count": len(records)},
@@ -758,7 +763,7 @@ func (s *relayServer) authRegister(w http.ResponseWriter, request *http.Request)
 		return
 	}
 	s.setCookie(w, sessionToken)
-	writeJSONStatus(w, http.StatusCreated, map[string]interface{}{"ok": true, "authenticated": true, "username": user.Username})
+	writeJSONStatus(w, http.StatusCreated, map[string]interface{}{"ok": true, "authenticated": true, "userId": user.ID, "username": user.Username, "isAdmin": user.IsAdmin})
 }
 
 func (s *relayServer) authLogin(w http.ResponseWriter, request *http.Request) {
@@ -785,7 +790,7 @@ func (s *relayServer) authLogin(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	s.setCookie(w, sessionToken)
-	writeJSON(w, map[string]interface{}{"ok": true, "authenticated": true, "username": user.Username})
+	writeJSON(w, map[string]interface{}{"ok": true, "authenticated": true, "userId": user.ID, "username": user.Username, "isAdmin": user.IsAdmin})
 }
 
 func (s *relayServer) authLogout(w http.ResponseWriter, request *http.Request) {
@@ -931,6 +936,79 @@ func (s *relayServer) authTokenItem(w http.ResponseWriter, request *http.Request
 		return
 	}
 	writeErrorStatus(w, http.StatusNotFound, "接口不存在")
+}
+
+func (s *relayServer) adminUsers(w http.ResponseWriter, request *http.Request) {
+	user, ok := s.userFromRequest(request)
+	if !ok {
+		writeErrorStatus(w, http.StatusUnauthorized, "请先登录")
+		return
+	}
+	if !user.IsAdmin {
+		writeErrorStatus(w, http.StatusForbidden, "仅管理员可以管理用户")
+		return
+	}
+	if request.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	users, err := s.store.listAdminUsers()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, map[string]interface{}{"users": users})
+}
+
+func (s *relayServer) adminUserItem(w http.ResponseWriter, request *http.Request) {
+	user, ok := s.userFromRequest(request)
+	if !ok {
+		writeErrorStatus(w, http.StatusUnauthorized, "请先登录")
+		return
+	}
+	if !user.IsAdmin {
+		writeErrorStatus(w, http.StatusForbidden, "仅管理员可以管理用户")
+		return
+	}
+	userID := strings.Trim(strings.TrimPrefix(request.URL.Path, "/api/admin/users/"), "/")
+	if userID == "" || strings.Contains(userID, "/") {
+		writeErrorStatus(w, http.StatusNotFound, "用户不存在")
+		return
+	}
+	switch request.Method {
+	case http.MethodPatch:
+		var body struct {
+			IsAdmin bool `json:"isAdmin"`
+		}
+		if err := decodeJSON(request, &body); err != nil {
+			writeErrorStatus(w, http.StatusBadRequest, "请求格式不正确")
+			return
+		}
+		if err := s.store.setUserAdmin(user.ID, userID, body.IsAdmin); err != nil {
+			writeUserAdminError(w, err)
+			return
+		}
+		writeJSON(w, map[string]bool{"ok": true})
+	case http.MethodDelete:
+		if err := s.store.deleteAdminUser(user.ID, userID); err != nil {
+			writeUserAdminError(w, err)
+			return
+		}
+		writeJSON(w, map[string]bool{"ok": true})
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+func writeUserAdminError(w http.ResponseWriter, err error) {
+	switch err.Error() {
+	case "用户不存在":
+		writeErrorStatus(w, http.StatusNotFound, err.Error())
+	case "当前登录账号不能在系统管理中修改", "系统至少需要一名管理员", "当前账号不是管理员":
+		writeErrorStatus(w, http.StatusConflict, err.Error())
+	default:
+		writeError(w, err)
+	}
 }
 
 func (s *relayServer) agentLogin(w http.ResponseWriter, request *http.Request) {
@@ -1694,6 +1772,8 @@ func (s *relayServer) openapi(w http.ResponseWriter, request *http.Request) {
 			"/api/auth/tokens":              map[string]interface{}{"get": map[string]string{"summary": "查询当前账号的全部 Token"}, "post": map[string]string{"summary": "创建 Token"}},
 			"/api/auth/tokens/{id}/refresh": map[string]interface{}{"post": map[string]string{"summary": "刷新指定 Token"}},
 			"/api/auth/tokens/{id}":         map[string]interface{}{"delete": map[string]string{"summary": "删除指定 Token"}},
+			"/api/admin/users":              map[string]interface{}{"get": map[string]string{"summary": "管理员查询用户列表"}},
+			"/api/admin/users/{id}":         map[string]interface{}{"patch": map[string]string{"summary": "管理员设置用户角色"}, "delete": map[string]string{"summary": "管理员删除用户"}},
 			"/api/agent/login":              map[string]interface{}{"post": map[string]string{"summary": "本机客户端使用 Token 登录设备"}},
 			"/api/agent/validate":           map[string]interface{}{"get": map[string]string{"summary": "校验客户端 Token 和设备绑定"}},
 			"/api/agent/ws":                 map[string]interface{}{"get": map[string]string{"summary": "客户端 WebSocket 反向连接"}},
@@ -1735,7 +1815,7 @@ func (s *relayServer) static(w http.ResponseWriter, request *http.Request) {
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("access-control-allow-origin", "*")
-		w.Header().Set("access-control-allow-methods", "GET,POST,DELETE,OPTIONS")
+		w.Header().Set("access-control-allow-methods", "GET,POST,PATCH,DELETE,OPTIONS")
 		w.Header().Set("access-control-allow-headers", "authorization,content-type,last-event-id")
 		if request.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

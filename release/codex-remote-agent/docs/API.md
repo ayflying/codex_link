@@ -59,7 +59,7 @@ Invoke-RestMethod "$base/api/devices" -Headers $headers
 
 ### GET `/api/auth/status`
 
-返回当前网页会话状态和当前账号的 Token 列表。未登录时 `authenticated` 为 `false`。
+返回当前网页会话状态和当前账号的 Token 列表。已登录时还会返回 `userId`、`username` 和 `isAdmin`；未登录时 `authenticated` 为 `false`。
 
 ### POST `/api/auth/logout`
 
@@ -73,6 +73,30 @@ Invoke-RestMethod "$base/api/devices" -Headers $headers
   "newPassword": "至少 8 位的新密码"
 }
 ```
+
+## 系统管理
+
+系统管理接口只允许管理员调用。第一个注册用户自动成为管理员；已有数据库执行迁移后，注册时间最早的用户会被设置为管理员。删除最后一个管理员以外的管理员账号后，系统会把剩余账号中注册最早的一个设置为管理员；系统始终至少保留一个管理员。
+
+### GET `/api/admin/users`
+
+返回用户列表，仅包含用户 ID、用户名、管理员状态和注册时间。
+
+### PATCH `/api/admin/users/{id}`
+
+设置其他用户的管理员状态：
+
+```json
+{
+  "isAdmin": true
+}
+```
+
+不能修改当前登录账号的管理员状态；取消最后一个管理员会返回 `409`。
+
+### DELETE `/api/admin/users/{id}`
+
+删除其他用户及其设备、秘钥、会话和图片元数据。删除最后一个管理员后，会自动提升剩余账号中注册最早的用户。
 
 ## Token 管理
 
@@ -171,6 +195,10 @@ GET /api/p2p/ws?deviceId=<设备 ID>&clientId=<本次网页连接 ID>
 
 从选中的在线客户端读取 Codex 历史对话并同步会话元数据。可使用 `?deviceId=<设备 ID>` 指定设备；网页控制台在 P2P 直连时会改用 DataChannel 的 `threads.list` 命令。
 
+### GET `/api/models`
+
+读取在线客户端通过 Codex app-server 暴露的可用模型目录。网页控制台在 P2P 直连时会改用 DataChannel 的 `models.list` 命令；模型选择会保存到客户端设置，并作用于新会话和后续消息。
+
 ### GET `/api/sessions`
 
 读取服务端缓存的会话元数据，按 `updated_at` 倒序返回。可使用 `?deviceId=<设备 ID>` 筛选。
@@ -205,7 +233,7 @@ GET /api/sessions/<session-id>/events?after=120
 
 服务端最多回放 `EVENT_BACKLOG_LIMIT` 条事件，默认 120 条；实时事件仍通过进程内广播发送。事件类型包括：
 
-`session.status`、`user.message`、`assistant.delta`、`tool.started`、`tool.output`、`approval.requested`、`approval.resolved`、`turn.done`、`error`。
+`session.status`、`user.message`、`assistant.delta`、`tool.started`、`tool.output`、`approval.requested`、`approval.resolved`、`turn.done`、`context.usage`、`error`。
 
 ### POST `/api/sessions/:id/messages`
 

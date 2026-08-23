@@ -47,9 +47,19 @@ export type RemoteEvent = {
 
 export type AuthStatus = {
   authenticated: boolean;
+  userId?: string;
   username?: string;
+  isAdmin?: boolean;
   registrationOpen?: boolean;
   tokens?: AccessToken[];
+};
+
+export type AdminUser = {
+  id: string;
+  username: string;
+  isAdmin: boolean;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type AccessToken = {
@@ -129,6 +139,21 @@ export async function changePassword(currentPassword: string, newPassword: strin
     method: "POST",
     body: JSON.stringify({ currentPassword, newPassword })
   });
+}
+
+export async function getAdminUsers() {
+  return request<{ users: AdminUser[] }>("/api/admin/users");
+}
+
+export async function updateAdminUser(userId: string, isAdmin: boolean) {
+  return request<{ ok: boolean }>(`/api/admin/users/${encodeURIComponent(userId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ isAdmin })
+  });
+}
+
+export async function deleteAdminUser(userId: string) {
+  return request<{ ok: boolean }>(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
 }
 
 export async function getTokens() {

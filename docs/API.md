@@ -59,7 +59,7 @@ Invoke-RestMethod "$base/api/devices" -Headers $headers
 
 ### GET `/api/auth/status`
 
-返回当前网页会话状态和当前账号的 Token 列表。未登录时 `authenticated` 为 `false`。
+返回当前网页会话状态和当前账号的 Token 列表。已登录时还会返回 `userId`、`username` 和 `isAdmin`；未登录时 `authenticated` 为 `false`。
 
 ### POST `/api/auth/logout`
 
@@ -73,6 +73,30 @@ Invoke-RestMethod "$base/api/devices" -Headers $headers
   "newPassword": "至少 8 位的新密码"
 }
 ```
+
+## 系统管理
+
+系统管理接口只允许管理员调用。第一个注册用户自动成为管理员；已有数据库执行迁移后，注册时间最早的用户会被设置为管理员。删除最后一个管理员以外的管理员账号后，系统会把剩余账号中注册最早的一个设置为管理员；系统始终至少保留一个管理员。
+
+### GET `/api/admin/users`
+
+返回用户列表，仅包含用户 ID、用户名、管理员状态和注册时间。
+
+### PATCH `/api/admin/users/{id}`
+
+设置其他用户的管理员状态：
+
+```json
+{
+  "isAdmin": true
+}
+```
+
+不能修改当前登录账号的管理员状态；取消最后一个管理员会返回 `409`。
+
+### DELETE `/api/admin/users/{id}`
+
+删除其他用户及其设备、秘钥、会话和图片元数据。删除最后一个管理员后，会自动提升剩余账号中注册最早的用户。
 
 ## Token 管理
 

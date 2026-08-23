@@ -20,6 +20,7 @@ import {
   ShieldCheck,
   Trash2,
   User,
+  Users,
   LogOut,
   X
 } from "@lucide/vue";
@@ -32,6 +33,7 @@ import {
   deleteToken,
   deleteThread,
   getAuthStatus,
+  getAdminUsers,
   getDevices,
   getHealth,
   getModels,
@@ -42,12 +44,15 @@ import {
   register,
   refreshToken,
   logout,
+  deleteAdminUser,
   resumeThread,
   sendApproval,
   sendMessage,
+  updateAdminUser,
   updateSettings,
   uploadImage,
   type AppSettings,
+  type AdminUser,
   type Attachment,
   type AccessToken,
   type AuthStatus,
@@ -68,6 +73,11 @@ const currentPassword = ref("");
 const newPassword = ref("");
 const userMenuOpen = ref(false);
 const modalView = ref<"user" | "tokens" | null>(null);
+const systemManagementOpen = ref(false);
+const adminUsers = ref<AdminUser[]>([]);
+const adminUsersLoading = ref(false);
+const adminError = ref("");
+const adminMessage = ref("");
 const passwordMessage = ref("");
 const tokens = ref<AccessToken[]>([]);
 const tokenName = ref("");
@@ -295,6 +305,8 @@ async function signOut() {
   activeDeviceId.value = "";
   userMenuOpen.value = false;
   modalView.value = null;
+  systemManagementOpen.value = false;
+  adminUsers.value = [];
 }
 
 function openModal(view: "user" | "tokens") {
@@ -305,6 +317,72 @@ function openModal(view: "user" | "tokens") {
 
 function closeModal() {
   modalView.value = null;
+}
+
+async function openSystemManagement() {
+  userMenuOpen.value = false;
+  modalView.value = null;
+  systemManagementOpen.value = true;
+  await refreshAdminUsers();
+}
+
+function closeSystemManagement() {
+  systemManagementOpen.value = false;
+  adminError.value = "";
+  adminMessage.value = "";
+}
+
+async function refreshAdminUsers() {
+  if (!auth.value.isAdmin) return;
+  adminUsersLoading.value = true;
+  adminError.value = "";
+  try {
+    const result = await getAdminUsers();
+    adminUsers.value = result.users;
+  } catch (reason) {
+    adminError.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    adminUsersLoading.value = false;
+  }
+}
+
+async function toggleAdminRole(user: AdminUser) {
+  if (user.id === auth.value.userId) {
+    adminError.value = "当前登录账号不能在系统管理中修改";
+    return;
+  }
+  adminUsersLoading.value = true;
+  adminError.value = "";
+  adminMessage.value = "";
+  try {
+    await updateAdminUser(user.id, !user.isAdmin);
+    adminMessage.value = `${user.username} 已${user.isAdmin ? "取消管理员" : "设为管理员"}`;
+    await refreshAdminUsers();
+  } catch (reason) {
+    adminError.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    adminUsersLoading.value = false;
+  }
+}
+
+async function removeAdminUser(user: AdminUser) {
+  if (user.id === auth.value.userId) {
+    adminError.value = "当前登录账号不能在系统管理中修改";
+    return;
+  }
+  if (!window.confirm(`确认删除用户“${user.username}”吗？该用户的设备、会话和秘钥也会被删除。`)) return;
+  adminUsersLoading.value = true;
+  adminError.value = "";
+  adminMessage.value = "";
+  try {
+    await deleteAdminUser(user.id);
+    adminMessage.value = `用户 ${user.username} 已删除`;
+    await refreshAdminUsers();
+  } catch (reason) {
+    adminError.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    adminUsersLoading.value = false;
+  }
 }
 
 async function selectDevice(device: RemoteDevice) {
@@ -1091,8 +1169,8 @@ function transportLabel(status: typeof transportState.value) {
           <span class="brand-copy"><strong>CODEX LINK</strong><small>REMOTE WORKSPACE</small></span>
         </div>
         <div class="topbar-heading">
-          <p class="eyebrow">{{ activeDevice ? "Connected workspace" : "Device directory" }}</p>
-          <h1>{{ activeDevice ? `${activeDevice.name} 控制台` : "选择设备" }}</h1>
+          <p class="eyebrow">{{ systemManagementOpen ? "Administration" : activeDevice ? "Connected workspace" : "Device directory" }}</p>
+          <h1>{{ systemManagementOpen ? "系统管理" : activeDevice ? `${activeDevice.name} 控制台` : "选择设备" }}</h1>
         </div>
       </div>
       <div class="top-actions">
@@ -1109,6 +1187,10 @@ function transportLabel(status: typeof transportState.value) {
             <ChevronDown :size="16" :class="{ open: userMenuOpen }" />
           </button>
           <div v-if="userMenuOpen" class="user-menu-panel" role="menu">
+            <button v-if="auth.isAdmin" class="user-menu-item" type="button" role="menuitem" @click="openSystemManagement">
+              <ShieldCheck :size="16" />
+              <span>系统管理</span>
+            </button>
             <button class="user-menu-item" type="button" role="menuitem" @click="openModal('user')">
               <User :size="16" />
               <span>用户管理</span>
@@ -1201,6 +1283,92 @@ function transportLabel(status: typeof transportState.value) {
       </section>
     </div>
 
+    <section v-if="systemManagementOpen" class="system-page">
+      <aside class="system-sidebar">
+        <div class="system-sidebar-heading">
+          <p class="eyebrow">Administration</p>
+          <strong>系统管理</strong>
+        </div>
+        <nav class="system-nav" aria-label="系统管理菜单">
+          <button class="system-nav-item active" type="button" @click="refreshAdminUsers">
+            <User :size="17" />
+            <span>用户管理</span>
+          </button>
+        </nav>
+        <button class="system-back" type="button" @click="closeSystemManagement">
+          <ArrowLeft :size="17" />
+          <span>返回控制台</span>
+        </button>
+      </aside>
+
+      <section class="system-content">
+        <header class="system-content-heading">
+          <div>
+            <p class="eyebrow">User Directory</p>
+            <h2>用户管理</h2>
+            <p>管理账号角色和访问范围。</p>
+          </div>
+          <button class="icon-button" type="button" title="刷新用户列表" :disabled="adminUsersLoading" @click="refreshAdminUsers">
+            <RefreshCw :size="19" />
+          </button>
+        </header>
+
+        <p v-if="adminError" class="error">{{ adminError }}</p>
+        <p v-if="adminMessage" class="admin-message">{{ adminMessage }}</p>
+
+        <div v-if="adminUsers.length" class="admin-user-table" role="table" aria-label="用户列表">
+          <div class="admin-user-row admin-user-header" role="row">
+            <span>用户</span>
+            <span>角色</span>
+            <span>注册时间</span>
+            <span>操作</span>
+          </div>
+          <div v-for="adminUser in adminUsers" :key="adminUser.id" class="admin-user-row" role="row">
+            <div class="admin-user-identity">
+              <span class="admin-user-avatar"><User :size="16" /></span>
+              <strong>{{ adminUser.username }}</strong>
+              <small v-if="adminUser.id === auth.userId">当前账号</small>
+            </div>
+            <span class="admin-role" :class="{ admin: adminUser.isAdmin }">
+              <ShieldCheck v-if="adminUser.isAdmin" :size="15" />
+              <User v-else :size="15" />
+              {{ adminUser.isAdmin ? "管理员" : "普通用户" }}
+            </span>
+            <time class="admin-created-at">{{ formatShortDate(adminUser.createdAt) }}</time>
+            <div class="admin-user-actions">
+              <button
+                class="icon-button icon-text"
+                type="button"
+                :disabled="adminUsersLoading || adminUser.id === auth.userId"
+                @click="toggleAdminRole(adminUser)"
+              >
+                <ShieldCheck :size="16" />
+                <span>{{ adminUser.isAdmin ? "取消管理员" : "设为管理员" }}</span>
+              </button>
+              <button
+                class="danger icon-text"
+                type="button"
+                :disabled="adminUsersLoading || adminUser.id === auth.userId"
+                @click="removeAdminUser(adminUser)"
+              >
+                <Trash2 :size="16" />
+                <span>删除</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div v-else-if="!adminUsersLoading" class="admin-empty">
+          <Users :size="28" />
+          <strong>暂无用户</strong>
+        </div>
+        <div v-else class="admin-empty">
+          <RefreshCw :size="28" class="spin" />
+          <strong>正在读取用户</strong>
+        </div>
+      </section>
+    </section>
+
+    <template v-else>
     <section v-if="!activeDeviceId" class="device-page">
       <div class="device-page-heading">
         <div>
@@ -1420,5 +1588,6 @@ function transportLabel(status: typeof transportState.value) {
         </form>
       </section>
     </div>
+    </template>
   </main>
 </template>
