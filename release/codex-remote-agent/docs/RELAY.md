@@ -111,6 +111,8 @@ $env:CODEX_LINK_BUILD_SERVER = "root@your-build-host"
 
 把整个 `release\codex-remote-agent` 目录复制到安装 Codex 的 Windows 电脑。
 
+直接双击 `codex-remote-agent.exe` 会打开图形客户端，填写服务端地址和 Token 后即可连接。关闭窗口只会隐藏到 Windows 系统托盘，点击托盘图标恢复窗口；在托盘图标上点击右键并选择“退出客户端”才会结束客户端进程。命令行 `login` 和 `agent` 模式仍然可用。
+
 ## 登录并启动客户端
 
 第一次在安装 Codex 的电脑执行：
@@ -130,7 +132,7 @@ Token 可以从网页的“账号安全 -> 客户端 Token”中创建和复制�
 .\codex-remote-agent.exe agent
 ```
 
-或双击 `start-agent.cmd`。同一个数据目录重复登录同一个服务端会复用原设备 ID，不会新增重复设备；网页设备列表可以删除离线设备以清理历史重复记录。客户端配置保存为本机 `data-remote-agent\remote-agent.json`，包含服务端地址、Token、设备 ID 和设备名称；同目录还会保存本机 Codex 会话缓存。客户端每次启动和重连都会校验 Token；Token 刷新或删除后，客户端需要重新登录。网络故障会每 5 秒自动重连。
+或双击 `start-agent.cmd`。同一个数据目录重复登录同一个服务端会复用原设备 ID，不会新增重复设备；网页设备列表可以删除离线设备以清理历史重复记录。客户端配置默认保存为 Windows 的 `%LOCALAPPDATA%\Codex Link\remote-agent\remote-agent.json`，包含服务端地址、Token、设备 ID 和设备名称；同目录还会保存本机 Codex 会话缓存。客户端每次启动和重连都会校验 Token；Token 刷新或删除后，客户端需要重新登录。网络故障会每 5 秒自动重连。首次启动会迁移发布目录下旧的 `data-remote-agent` 文件。
 
 网页和客户端使用同一个服务端账号。登录网页后先选择设备，再进入对应 Codex 控制台；设备卡片会显示在线状态和使用的 Token。对话、输出、审批、图片和取消操作都会由服务端转发到所选客户端。
 

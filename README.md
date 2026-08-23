@@ -80,6 +80,8 @@ release\codex-remote-agent\
 
 把该目录放到安装了 Codex 的 Windows 电脑上。目标电脑不需要 Node 或 Docker，只需要本机已有的 Codex/CCS 配置。
 
+直接双击 `codex-remote-agent.exe` 会打开客户端窗口，填写服务端地址和 Token 后点击“连接并启动”。关闭窗口只会隐藏到 Windows 系统托盘，点击托盘图标可恢复窗口；需要结束客户端时，在托盘图标上点击右键并选择“退出客户端”。命令行 `login` 和 `agent` 模式仍然保留。
+
 首次登录：
 
 ```powershell
@@ -95,7 +97,7 @@ release\codex-remote-agent\
 .\codex-remote-agent.exe agent
 ```
 
-也可以双击 `start-agent.cmd`。同一个 `DATA_DIR` 重复登录同一个服务端会复用原设备 ID，不会新增重复设备；如需清理已经产生的离线重复设备，可在网页设备列表点击删除。客户端每次启动和重连都会校验 Token；网络故障会自动重连。客户端配置和本地缓存保存在 `DATA_DIR`，默认目录为 `data-remote-agent`，不会打印完整 Token。
+也可以双击 `start-agent.cmd`。同一个 `DATA_DIR` 重复登录同一个服务端会复用原设备 ID，不会新增重复设备；如需清理已经产生的离线重复设备，可在网页设备列表点击删除。客户端每次启动和重连都会校验 Token；网络故障会自动重连。客户端配置和本地缓存保存在 `DATA_DIR`，默认目录为 Windows 的 `%LOCALAPPDATA%\Codex Link\remote-agent`（其他系统使用用户配置目录），不会打印完整 Token。首次启动会迁移发布目录下旧的 `data-remote-agent` 文件。
 
 ## 网页功能
 

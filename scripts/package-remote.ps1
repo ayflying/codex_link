@@ -13,7 +13,7 @@ $remoteOutput = "$RemoteDir-output"
 
 ssh $Remote "rm -rf '$RemoteDir' '$remoteOutput' && mkdir -p '$RemoteDir' '$remoteOutput'"
 scp -r "$root\go.mod" "$root\go.sum" "$root\cmd" "$Remote`:$RemoteDir/"
-ssh $Remote "cd '$RemoteDir' && go mod download && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o '$remoteOutput/codex-remote-agent.exe' ./cmd/codex-remote-agent && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o '$remoteOutput/codex-relay-server' ./cmd/codex-relay-server"
+ssh $Remote "cd '$RemoteDir' && go mod download && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags='-s -w -H=windowsgui' -o '$remoteOutput/codex-remote-agent.exe' ./cmd/codex-remote-agent && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o '$remoteOutput/codex-relay-server' ./cmd/codex-relay-server"
 
 if (Test-Path $release) {
   Remove-Item -LiteralPath $release -Recurse -Force

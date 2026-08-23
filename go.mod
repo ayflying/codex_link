@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/gorilla/websocket v1.5.3
+	github.com/lxn/win v0.0.0-20210218163916-a377121e959e
 	github.com/pion/stun/v3 v3.1.6
 	github.com/pion/webrtc/v4 v4.2.18
 )

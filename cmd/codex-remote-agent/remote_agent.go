@@ -64,11 +64,28 @@ func loginRemoteAgent(dataDir string) {
 			log.Fatal("未读取到密码")
 		}
 		token = strings.TrimSpace(input)
-		if token == "" {
-			log.Fatal("Token 不能为空")
-		}
 	}
-	serverURL = strings.TrimRight(serverURL, "/")
+	config, err := loginRemoteAgentConfig(dataDir, serverURL, token, deviceName)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("客户端已登录: %s", config.DeviceName)
+	log.Printf("登录配置已保存；此命令会退出，请另行运行: codex-remote-agent agent")
+}
+
+func loginRemoteAgentConfig(dataDir, serverURL, token, deviceName string) (remoteAgentConfig, error) {
+	serverURL = strings.TrimRight(strings.TrimSpace(serverURL), "/")
+	token = strings.TrimSpace(token)
+	deviceName = firstNonEmptyString(strings.TrimSpace(deviceName), localDeviceName())
+	if serverURL == "" {
+		return remoteAgentConfig{}, errors.New("服务端地址不能为空")
+	}
+	if token == "" {
+		return remoteAgentConfig{}, errors.New("Token 不能为空")
+	}
+	if _, err := remoteHTTPURL(remoteAgentConfig{ServerURL: serverURL}); err != nil {
+		return remoteAgentConfig{}, err
+	}
 	deviceID := loginDeviceID(dataDir, serverURL)
 	if deviceID == "" {
 		deviceID = randomID()
@@ -80,30 +97,29 @@ func loginRemoteAgent(dataDir string) {
 	})
 	response, err := http.Post(serverURL+"/api/agent/login", "application/json", bytes.NewReader(requestBody))
 	if err != nil {
-		log.Fatal(err)
+		return remoteAgentConfig{}, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		var result map[string]interface{}
 		_ = json.NewDecoder(response.Body).Decode(&result)
-		log.Fatalf("登录失败: %v", firstNonEmptyString(stringValue(result["error"]), response.Status))
+		return remoteAgentConfig{}, fmt.Errorf("登录失败: %s", firstNonEmptyString(stringValue(result["error"]), response.Status))
 	}
 	var result struct {
 		DeviceID   string `json:"deviceId"`
 		DeviceName string `json:"deviceName"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
-		log.Fatal(err)
+		return remoteAgentConfig{}, err
 	}
 	if result.DeviceID == "" {
-		log.Fatal("服务端未返回设备 ID")
+		return remoteAgentConfig{}, errors.New("服务端未返回设备 ID")
 	}
 	config := remoteAgentConfig{ServerURL: serverURL, Token: token, DeviceID: result.DeviceID, DeviceName: firstNonEmptyString(result.DeviceName, deviceName)}
 	if err := saveRemoteAgentConfig(dataDir, config); err != nil {
-		log.Fatal(err)
+		return remoteAgentConfig{}, err
 	}
-	log.Printf("客户端已登录: %s", config.DeviceName)
-	log.Printf("登录配置已保存；此命令会退出，请另行运行: codex-remote-agent agent")
+	return config, nil
 }
 
 func loginDeviceID(dataDir, serverURL string) string {
@@ -152,15 +168,19 @@ func runRemoteAgent(root, cwd, dataDir string) {
 var errAgentAuth = errors.New("agent authentication failed")
 
 func (a *remoteAgent) validate() error {
-	endpoint, err := remoteHTTPURL(a.config)
+	return validateRemoteAgentConfig(a.config)
+}
+
+func validateRemoteAgentConfig(config remoteAgentConfig) error {
+	endpoint, err := remoteHTTPURL(config)
 	if err != nil {
 		return err
 	}
-	request, err := http.NewRequest(http.MethodGet, endpoint+"/api/agent/validate?deviceId="+url.QueryEscape(a.config.DeviceID), nil)
+	request, err := http.NewRequest(http.MethodGet, endpoint+"/api/agent/validate?deviceId="+url.QueryEscape(config.DeviceID), nil)
 	if err != nil {
 		return err
 	}
-	request.Header.Set("Authorization", "Bearer "+a.config.Token)
+	request.Header.Set("Authorization", "Bearer "+config.Token)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return err

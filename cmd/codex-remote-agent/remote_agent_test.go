@@ -1,10 +1,85 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
+
+func TestDefaultRemoteAgentDataDirUsesLocalAppData(t *testing.T) {
+	localAppData := t.TempDir()
+	t.Setenv("LOCALAPPDATA", localAppData)
+
+	got := defaultRemoteAgentDataDir(t.TempDir())
+	want := filepath.Join(localAppData, "Codex Link", "remote-agent")
+	if got != want {
+		t.Fatalf("expected data directory %q, got %q", want, got)
+	}
+}
+
+func TestMigrateRemoteAgentDataCopiesOnlyMissingFiles(t *testing.T) {
+	root := t.TempDir()
+	legacyDir := filepath.Join(root, "data-remote-agent")
+	dataDir := filepath.Join(t.TempDir(), "remote-agent")
+	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
+		t.Fatalf("create legacy directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "remote-agent.json"), []byte("legacy"), 0o600); err != nil {
+		t.Fatalf("write legacy config: %v", err)
+	}
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatalf("create target directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "remote-agent-cache.json"), []byte("current"), 0o600); err != nil {
+		t.Fatalf("write current cache: %v", err)
+	}
+
+	migrateRemoteAgentData(root, dataDir)
+	legacy, err := os.ReadFile(filepath.Join(dataDir, "remote-agent.json"))
+	if err != nil || string(legacy) != "legacy" {
+		t.Fatalf("legacy config was not migrated: %q, %v", legacy, err)
+	}
+	current, err := os.ReadFile(filepath.Join(dataDir, "remote-agent-cache.json"))
+	if err != nil || string(current) != "current" {
+		t.Fatalf("current cache was overwritten: %q, %v", current, err)
+	}
+}
+
+func TestLoginRemoteAgentConfigSavesConfigAfterServerLogin(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/agent/login" || request.Method != http.MethodPost {
+			t.Errorf("unexpected login request: %s %s", request.Method, request.URL.Path)
+		}
+		var payload map[string]string
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Errorf("decode login request: %v", err)
+		}
+		if payload["token"] != "crs_test-token" || payload["deviceName"] != "测试电脑" {
+			t.Errorf("unexpected login payload: %#v", payload)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"deviceId":"device-server","deviceName":"测试电脑"}`))
+	}))
+	defer server.Close()
+
+	dataDir := filepath.Join(t.TempDir(), "remote-agent")
+	config, err := loginRemoteAgentConfig(dataDir, server.URL, " crs_test-token ", " 测试电脑 ")
+	if err != nil {
+		t.Fatalf("login should succeed in writable data directory: %v", err)
+	}
+	if config.DeviceID != "device-server" {
+		t.Fatalf("expected server device ID, got %q", config.DeviceID)
+	}
+	loaded, err := loadRemoteAgentConfig(dataDir)
+	if err != nil || loaded.DeviceID != config.DeviceID || loaded.Token != config.Token {
+		t.Fatalf("saved config could not be loaded: %#v, %v", loaded, err)
+	}
+}
 
 func TestLoginDeviceIDReusesConfigForSameServer(t *testing.T) {
 	dataDir := t.TempDir()

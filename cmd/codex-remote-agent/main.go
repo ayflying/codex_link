@@ -890,7 +890,10 @@ func parseTokenUsage(value interface{}) *TokenUsage {
 func main() {
 	root := workingRoot()
 	cwd := getenv("CODEX_CWD", root)
-	dataDir := getenv("DATA_DIR", filepath.Join(root, "data-remote-agent"))
+	dataDir := getenv("DATA_DIR", defaultRemoteAgentDataDir(root))
+	if os.Getenv("DATA_DIR") == "" {
+		migrateRemoteAgentData(root, dataDir)
+	}
 	if len(os.Args) > 1 && strings.EqualFold(os.Args[1], "login") {
 		loginRemoteAgent(dataDir)
 		return
@@ -899,7 +902,13 @@ func main() {
 		runRemoteAgent(root, cwd, dataDir)
 		return
 	}
-	fmt.Fprintln(os.Stderr, "用法: codex-remote-agent login --server <服务端地址> --token <Token> [--device <设备名称>]；登录后运行 agent")
+	if len(os.Args) == 1 {
+		if err := runClientGUI(root, cwd, dataDir); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		return
+	}
+	fmt.Fprintln(os.Stderr, "用法: codex-remote-agent（图形界面）或 login --server <服务端地址> --token <Token> [--device <设备名称>]；登录后运行 agent")
 	os.Exit(2)
 }
 
@@ -960,6 +969,45 @@ func discoverCodexBin() string {
 func workingRoot() string {
 	cwd, _ := os.Getwd()
 	return cwd
+}
+
+func defaultRemoteAgentDataDir(root string) string {
+	if localAppData := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); localAppData != "" {
+		return filepath.Join(localAppData, "Codex Link", "remote-agent")
+	}
+	if configDir, err := os.UserConfigDir(); err == nil && strings.TrimSpace(configDir) != "" {
+		return filepath.Join(configDir, "codex-link", "remote-agent")
+	}
+	return filepath.Join(root, "data-remote-agent")
+}
+
+func migrateRemoteAgentData(root, dataDir string) {
+	legacyDir := filepath.Join(root, "data-remote-agent")
+	if filepath.Clean(legacyDir) == filepath.Clean(dataDir) {
+		return
+	}
+	entries, err := os.ReadDir(legacyDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		source := filepath.Join(legacyDir, entry.Name())
+		target := filepath.Join(dataDir, entry.Name())
+		if _, err := os.Stat(target); err == nil {
+			continue
+		}
+		raw, err := os.ReadFile(source)
+		if err != nil {
+			continue
+		}
+		if err := os.MkdirAll(dataDir, 0o700); err != nil {
+			return
+		}
+		_ = os.WriteFile(target, raw, 0o600)
+	}
 }
 
 func asMap(value interface{}) map[string]interface{} {
