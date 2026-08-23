@@ -18,7 +18,7 @@ Codex Link 是一个手机优先的 Vue 控制台，用于通过中心服务远�
 - 本机只运行 Go 客户端，主动连接服务端，不开放本地 HTTP 端口。
 - API Key、CCS 配置和 Codex 配置只留在运行 Codex 的电脑上。
 
-P2P 使用 STUN 发现可达地址。relay 自带只响应 Binding 请求的 STUN-only UDP 端口，Compose 默认映射宿主机 `3478/udp`；该端口不转发 DataChannel 流量。STUN 地址、端口映射和 `P2P-only` 开关都是公开服务配置，直接在 `docker-compose.yml` 的 relay 配置和 ports 中修改，不放入 `.env`。设置 `WEBRTC_P2P_ONLY` 为 `true` 后，业务接口和图片传输打洞失败会直接报错，不使用服务端中转。
+P2P 使用 STUN 发现可达地址。relay 自带只响应 Binding 请求的 STUN-only UDP 端口，Compose 默认映射宿主机 `18787/udp`，与网页服务的 `18787/tcp` 共用端口号；该端口不转发 DataChannel 流量。STUN 地址、端口映射和 `P2P-only` 开关都是公开服务配置，直接在 `docker-compose.yml` 的 relay 配置和 ports 中修改，不放入 `.env`。设置 `WEBRTC_P2P_ONLY` 为 `true` 后，业务接口和图片传输打洞失败会直接报错，不使用服务端中转。
 
 ## 部署中心服务端
 
