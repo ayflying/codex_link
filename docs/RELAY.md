@@ -45,6 +45,23 @@ ALLOW_REGISTRATION=false
 docker compose up -d --pull always
 ```
 
+## 版本与镜像标签
+
+仓库根目录的 `VERSION` 保存三段式版本号，当前基线为 `0.2.3`。本地首次使用时执行：
+
+```powershell
+.\scripts\install-git-hooks.ps1
+```
+
+Git hook 会在每次提交前自动递增修订号，例如 `0.2.3` 到 `0.2.4`。发布 relay 镜像时，脚本会在 `root@192.168.50.217` 远程构建，并同时推送版本标签和 `latest` 标签：
+
+```powershell
+$env:CODEX_LINK_GHCR_TOKEN = "GHCR_TOKEN"
+.\scripts\publish-relay.ps1
+```
+
+不要将 GHCR Token 写入仓库。Compose 默认使用 `latest`；需要回滚或跳转版本时，把镜像改为 `ghcr.io/ayflying/codex_link:0.2.3` 等具体标签后重新部署。
+
 账号、Token、设备、会话和事件保存在 MySQL volume `mysql_data`，服务端中转的图片文件保存在 Docker volume `data`。P2P 模式下图片直接写入 agent 的本地 `data-remote-agent/uploads`，不会经过 relay。新数据库从空数据开始，不会导入旧的 `relay-store.json`。服务端不保存本机 Codex/CCS/API Key。
 
 服务端启动时会自动执行 `cmd/codex-relay-server/migrations` 下的数据库迁移。迁移文件使用 `001_init.sql`、`002_add_xxx.sql` 这样的递增版本号；已执行版本会记录在 MySQL 的 `schema_migrations` 表中，空数据库会自动建表，已有旧数据库会自动补齐当前版本。已执行迁移的名称或内容被修改时，服务端会拒绝启动，应该新增更高版本的迁移文件修正 schema。当前版本也会通过认证后的 `/api/health` 返回 `schemaVersion`。

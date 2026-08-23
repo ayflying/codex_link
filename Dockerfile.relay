@@ -19,6 +19,8 @@ FROM alpine:3.21
 
 RUN addgroup -S codex && adduser -S -G codex -h /app codex
 WORKDIR /app
+ARG CODEX_LINK_VERSION=0.2.3
+LABEL org.opencontainers.image.version=$CODEX_LINK_VERSION
 COPY --from=go-build /out/codex-relay-server /app/codex-relay-server
 COPY --from=web-build /src/apps/web/dist /app/web
 RUN mkdir -p /data && chown -R codex:codex /app /data

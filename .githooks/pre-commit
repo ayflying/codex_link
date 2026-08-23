@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+root=$(git rev-parse --show-toplevel)
+version_file="$root/VERSION"
+version=$(tr -d '[:space:]' < "$version_file")
+
+major=${version%%.*}
+rest=${version#*.}
+minor=${rest%%.*}
+patch=${rest#*.}
+case "$major" in ''|*[!0-9]*) echo "VERSION 不是有效的三段版本号: $version" >&2; exit 1 ;; esac
+case "$minor" in ''|*[!0-9]*) echo "VERSION 不是有效的三段版本号: $version" >&2; exit 1 ;; esac
+case "$patch" in ''|*[!0-9]*) echo "VERSION 不是有效的三段版本号: $version" >&2; exit 1 ;; esac
+
+next="$major.$minor.$((patch + 1))"
+printf '%s\n' "$next" > "$version_file"
+git add "$version_file"
+printf '版本号: %s -> %s\n' "$version" "$next"

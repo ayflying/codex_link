@@ -35,6 +35,23 @@ docker compose up -d --pull always
 http://<服务端地址>:18787
 ```
 
+## 版本与镜像发布
+
+根目录 `VERSION` 是镜像版本号，格式为 `主版本.次版本.修订号`。启用本地 Git hook 后，每次提交前会自动将修订号加一；首次启用执行：
+
+```powershell
+.\scripts\install-git-hooks.ps1
+```
+
+当前基线版本为 `0.2.3`，下一次提交会递增为 `0.2.4`。镜像发布必须使用远程服务器 `root@192.168.50.217` 构建，并同时推送版本标签和 `latest` 标签。GHCR Token 只通过环境变量传给脚本，不要写入文件：
+
+```powershell
+$env:CODEX_LINK_GHCR_TOKEN = "GHCR_TOKEN"
+.\scripts\publish-relay.ps1
+```
+
+脚本会推送 `ghcr.io/ayflying/codex_link:<VERSION>` 和 `ghcr.io/ayflying/codex_link:latest`。Compose 默认使用 `latest`；需要固定或跳转版本时，将 `docker-compose.yml` 中的镜像标签改为对应版本号。
+
 MySQL 只通过 Compose 内部网络提供给 relay，不对外暴露端口。首次注册完成后，建议在 `.env` 中设置 `ALLOW_REGISTRATION=false`，再执行一次：
 
 ```bash
