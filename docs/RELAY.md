@@ -47,7 +47,7 @@ docker compose up -d --pull always
 
 ## 版本与镜像标签
 
-仓库根目录的 `VERSION` 保存三段式版本号，当前基线为 `0.2.3`。本地首次使用时执行：
+仓库根目录的 `VERSION` 保存三段式版本号，初始基线为 `0.2.3`。本地首次使用时执行：
 
 ```powershell
 .\scripts\install-git-hooks.ps1
