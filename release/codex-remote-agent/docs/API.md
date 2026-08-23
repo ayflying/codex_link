@@ -1,37 +1,45 @@
-# Codex Relay Server API
+# Codex Link API
 
-这是中心服务端的 HTTP API。浏览器、手机和外部系统只连接服务端；安装 Codex 的本机客户端使用单独的 WebSocket 通道连接服务端，不会开放本地 HTTP 端口。
+中心服务端提供网页、手机和外部系统使用的 HTTP API。运行 Codex 的电脑使用 Go 客户端，通过主动建立的 WebSocket 连接接入服务端，不开放本机 HTTP 端口。
 
-服务地址示例：
+默认服务地址：
 
 ```text
-https://codex.example.com
+http://<服务端地址>:18787
 ```
 
-完整部署与客户端登录说明见 [RELAY.md](RELAY.md)。机器可读描述：
+机器可读接口描述：
 
 ```text
 GET /api/openapi.json
 ```
 
-## 认证
+## 认证方式
 
-网页通过 Cookie 登录；外部 API 可使用 Bearer Token。Token 在网页登录后创建：
+网页登录使用 HttpOnly Cookie。外部调用和本机客户端使用 `Authorization: Bearer <Token>`。
+
+Token 只能在网页登录后创建、刷新或删除。完整 Token 保存在服务端 MySQL 中，并会显示在当前账号的 Token 管理页面；不要把 Token 提交到 Git 或写入公开日志。
 
 ```powershell
-$base = "https://codex.example.com"
-$token = (Invoke-RestMethod "$base/api/auth/token" -Method POST -WebSession $session).token
+$base = "http://127.0.0.1:18787"
+$session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+Invoke-RestMethod "$base/api/auth/login" -Method POST -WebSession $session `
+  -ContentType "application/json" -Body '{"username":"alice","password":"至少 8 位的密码"}'
+
+$token = (Invoke-RestMethod "$base/api/auth/tokens" -Method POST -WebSession $session `
+  -ContentType "application/json" -Body '{"name":"脚本调用"}').token.token
+
 $headers = @{ Authorization = "Bearer $token" }
 Invoke-RestMethod "$base/api/devices" -Headers $headers
 ```
 
-Token 只会在创建时返回一次。
+除注册、登录、客户端登录、OpenAPI 外，`/api/*` 接口都需要 Cookie 或 Bearer Token。未认证请求返回 `401`。
 
 ## 账号
 
-### POST /api/auth/register
+### POST `/api/auth/register`
 
-创建服务端账号。服务端管理员可设置 `ALLOW_REGISTRATION=false` 关闭注册。
+注册账号。只有 `ALLOW_REGISTRATION=true` 时允许注册。
 
 ```json
 {
@@ -40,9 +48,7 @@ Token 只会在创建时返回一次。
 }
 ```
 
-### POST /api/auth/login
-
-使用同一份账号登录网页或 API。
+### POST `/api/auth/login`
 
 ```json
 {
@@ -51,9 +57,15 @@ Token 只会在创建时返回一次。
 }
 ```
 
-### POST /api/auth/password
+### GET `/api/auth/status`
 
-修改当前账号密码。
+返回当前网页会话状态和当前账号的 Token 列表。未登录时 `authenticated` 为 `false`。
+
+### POST `/api/auth/logout`
+
+删除当前网页登录会话。
+
+### POST `/api/auth/password`
 
 ```json
 {
@@ -62,145 +74,181 @@ Token 只会在创建时返回一次。
 }
 ```
 
-### GET | POST | DELETE /api/auth/token
+## Token 管理
 
-- `GET` 查询 Token 是否已启用，不返回完整 Token。
-- `POST` 创建或轮换 Token。
-- `DELETE` 删除 Token。
+### GET `/api/auth/tokens`
 
-## 本机客户端
+返回当前账号拥有的全部 Token，包括名称、完整值、脱敏前缀、创建/刷新时间和最后使用设备。
 
-### POST /api/agent/login
+### POST `/api/auth/tokens`
 
-本机 Go agent 首次登录时使用网页同一账号，服务端返回仅属于该设备的令牌。
+创建一个 Token。
 
 ```json
 {
-  "username": "alice",
-  "password": "密码",
-  "deviceId": "客户端随机 ID",
+  "name": "办公室电脑"
+}
+```
+
+响应中的 `token.token` 是完整 Token，例如 `crs_xxx`。
+
+### POST `/api/auth/tokens/:id/refresh`
+
+刷新指定 Token。Token ID 不变，旧完整值立即对新连接失效；已建立的 WebSocket 不会被服务端主动断开。
+
+### DELETE `/api/auth/tokens/:id`
+
+删除指定 Token。已建立的 WebSocket 不会被服务端主动断开，但客户端下次启动或重连时校验会失败。
+
+### 兼容接口 `/api/auth/token`
+
+保留旧路径：
+
+- `GET` 等价于 `GET /api/auth/tokens`。
+- `POST` 等价于创建 Token，可传 `{ "name": "..." }`。
+- `DELETE` 使用 query 参数 `tokenId`，例如 `/api/auth/token?tokenId=<id>`。
+
+## 本机客户端
+
+### POST `/api/agent/login`
+
+客户端使用网页创建的 Token 注册或更新设备。客户端只保存 Token、设备 ID 和服务端地址，不保存网页密码。
+
+```json
+{
+  "token": "crs_xxx",
+  "deviceId": "客户端生成的设备 ID",
   "deviceName": "办公室电脑"
 }
 ```
 
-### GET /api/agent/ws
+### GET `/api/agent/validate?deviceId=<id>`
 
-本机 agent 的 WebSocket 连接。客户端通过请求头传递设备令牌：
+客户端启动和重连前校验 Token 与设备绑定关系。Token 无效、已刷新、已删除或设备不属于当前 Token 时返回 `401`。
 
-```text
-Authorization: Bearer <agent-token>
-```
+### GET `/api/agent/ws?deviceId=<id>`
 
-并在 URL query 中传递非敏感设备 ID：
+客户端 WebSocket 反向连接。请求头必须包含：
 
 ```text
-/api/agent/ws?deviceId=<device-id>
+Authorization: Bearer <Token>
 ```
 
-该接口不面向浏览器或第三方业务调用。
+客户端登录示例：
+
+```powershell
+codex-remote-agent.exe login `
+  --server "http://服务端地址:18787" `
+  --token "crs_xxx" `
+  --device "办公室电脑"
+```
 
 ## 设备和会话
 
-### GET /api/devices
+### GET `/api/devices`
 
-返回当前账号的客户端和在线状态。多数接口可附带 `?deviceId=<id>` 指定某台在线电脑；未指定时服务端会选择当前账号下的在线客户端，已有会话则固定转发到它所属的客户端。
+返回当前账号的设备列表，包含设备名称、在线状态、最后连接时间、Token 名称和脱敏前缀。离线设备不能执行控制台操作。
 
-### GET /api/threads
+### GET `/api/health`
 
-从选中的在线客户端读取 Codex 历史对话并同步到服务端。
+返回服务端模式、MySQL 状态、当前账号的在线设备数量和设备列表。该接口仍受认证保护。
 
-### POST /api/threads/{id}/resume
+### GET `/api/threads`
 
-恢复已有对话。
+从选中的在线客户端读取 Codex 历史对话并同步会话元数据。可使用 `?deviceId=<设备 ID>` 指定设备。
 
-### DELETE /api/threads/{id}
+### GET `/api/sessions`
 
-归档 Codex 对话并删除服务端对应缓存。
+读取服务端缓存的会话元数据，按 `updated_at` 倒序返回。可使用 `?deviceId=<设备 ID>` 筛选。
 
-### GET /api/sessions
+### POST `/api/sessions`
 
-读取服务端已同步的会话缓存。
-
-### POST /api/sessions
-
-在选中的本机客户端上新建 Codex 会话：
+创建新会话并转发到在线客户端。
 
 ```json
 {
-  "prompt": "检查当前项目"
+  "prompt": "用中文说明当前项目状态"
 }
 ```
 
-### POST /api/sessions/{id}/messages
+### POST `/api/threads/:id/resume`
 
-发送消息，服务端会经 WebSocket 转发给本机 agent。`202` 表示客户端已接收命令；流式输出从 SSE 读取。
+恢复指定历史对话。服务端只补齐最近的事件缓存，避免长对话一次性加载。
+
+### DELETE `/api/threads/:id`
+
+归档 Codex 对话，并删除服务端对应的会话和事件缓存。
+
+## 消息、审批和流式事件
+
+### GET `/api/sessions/:id/events`
+
+SSE 事件流。使用 `after` query 参数或 `Last-Event-ID` 请求头补齐事件，例如：
+
+```text
+GET /api/sessions/<session-id>/events?after=120
+```
+
+服务端最多回放 `EVENT_BACKLOG_LIMIT` 条事件，默认 120 条；实时事件仍通过进程内广播发送。事件类型包括：
+
+`session.status`、`user.message`、`assistant.delta`、`tool.started`、`tool.output`、`approval.requested`、`approval.resolved`、`turn.done`、`error`。
+
+### POST `/api/sessions/:id/messages`
+
+发送消息，可附带已上传的图片附件。
 
 ```json
 {
-  "text": "继续处理",
-  "attachments": []
+  "text": "请检查这个截图",
+  "attachments": [
+    { "id": "图片附件 ID" }
+  ]
 }
 ```
 
-### GET /api/sessions/{id}/events
+### POST `/api/sessions/:id/approvals`
 
-获取 SSE 流式事件。支持 `?after=<eventId>` 或 `Last-Event-Id` 断线续传。
-
-事件类型包括：
-
-- `session.status`
-- `user.message`
-- `assistant.delta`
-- `tool.started`
-- `tool.output`
-- `approval.requested`
-- `approval.resolved`
-- `turn.done`
-- `error`
-
-### POST /api/sessions/{id}/approvals
+提交审批决定。`decision` 使用 `approved` 或 `rejected`。
 
 ```json
 {
-  "approvalId": "approval-id",
+  "approvalId": "审批请求 ID",
   "decision": "approved"
 }
 ```
 
-`decision` 可为 `approved` 或 `rejected`。
-
-### POST /api/sessions/{id}/cancel
+### POST `/api/sessions/:id/cancel`
 
 取消当前 turn。
 
-## 图片和设置
+## 图片附件
 
-### POST /api/uploads
+### POST `/api/uploads`
 
-上传 Data URL 图片。服务端将图片保存到持久化卷，并在转发消息时传给本机 agent，由 agent 写入自己的临时附件目录后交给 Codex 读取。
+上传 Base64 图片。图片二进制写入 Docker `data` volume 的 `UPLOAD_DIR`，MySQL 只保存文件路径、名称、类型、大小和所属用户。
 
 ```json
 {
-  "name": "screen.png",
+  "name": "截图.png",
   "mimeType": "image/png",
   "dataUrl": "data:image/png;base64,..."
 }
 ```
 
-单张图片上限为 10MB。
+单张图片上限为 10 MB。响应返回附件 ID，之后在消息中引用该 ID。
 
-### GET | POST /api/settings
+### GET `/api/uploads/:id`
 
-读取或更新选中客户端上的 Codex 设置：
+读取当前用户自己的图片附件。
+
+## 错误响应
+
+错误响应统一为：
 
 ```json
 {
-  "approvalMode": "on-request",
-  "workMode": "edit"
+  "error": "错误说明"
 }
 ```
 
-可选值：
-
-- `approvalMode`: `on-request`、`on-failure`、`never`
-- `workMode`: `edit`、`plan`
+常见状态码：`400` 请求无效，`401` 未登录或 Token 无效，`404` 资源不存在，`409` 资源冲突，`502` 本机 Codex 客户端转发失败，`503` 没有在线设备。
