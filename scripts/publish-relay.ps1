@@ -50,12 +50,30 @@ cleanup() {
 }
 trap cleanup EXIT
 cd "`$remote_dir"
-docker build --build-arg CODEX_LINK_VERSION='$version' --label org.opencontainers.image.revision='$revision' -t '$Image`:$version' -t '$Image`:latest' -f Dockerfile.relay .
 if [ '$SkipPush' != 'True' ]; then
-  docker push '$Image`:$version'
-  docker push '$Image`:latest'
+  timeout --signal=TERM --kill-after=15s 300 \
+    docker buildx build \
+    --provenance=false \
+    --sbom=false \
+    --build-arg CODEX_LINK_VERSION='$version' \
+    --label org.opencontainers.image.revision='$revision' \
+    -t '$Image`:$version' \
+    -t '$Image`:latest' \
+    --push \
+    -f Dockerfile.relay .
+  timeout --signal=TERM --kill-after=15s 30 \
+    docker buildx imagetools inspect '$Image`:$version' >/dev/null
+else
+  docker build \
+    --provenance=false \
+    --sbom=false \
+    --build-arg CODEX_LINK_VERSION='$version' \
+    --label org.opencontainers.image.revision='$revision' \
+    -t '$Image`:$version' \
+    -t '$Image`:latest' \
+    -f Dockerfile.relay .
+  docker image inspect '$Image`:$version' --format 'built image: {{.Id}}'
 fi
-docker image inspect '$Image`:$version' --format 'built image: {{.Id}}'
 printf '%s\n' '镜像构建完成: $Image`:$version 和 $Image`:latest'
 "@
 
