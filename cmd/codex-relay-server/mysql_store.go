@@ -310,6 +310,19 @@ func (s *mysqlRelayStore) deviceOwnedBy(userID, deviceID string) bool {
 	return err == nil && found == 1
 }
 
+func (s *mysqlRelayStore) deleteDevice(userID, deviceID string) error {
+	result, err := s.db.Exec(`DELETE FROM devices WHERE id = ? AND user_id = ?`, deviceID, userID)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected == 0 {
+		return errors.New("设备不存在")
+	}
+	return nil
+}
+
 func (s *mysqlRelayStore) upsertSessions(userID, deviceID string, sessions []Session) {
 	tx, err := s.db.Begin()
 	if err != nil {

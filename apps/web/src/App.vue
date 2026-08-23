@@ -25,6 +25,7 @@ import {
   cancelTurn,
   createToken,
   createSession,
+  deleteDevice,
   deleteToken,
   deleteThread,
   getAuthStatus,
@@ -288,6 +289,21 @@ async function selectDevice(device: RemoteDevice) {
   events.value = [];
   sidebarOpen.value = false;
   await refresh();
+}
+
+async function removeDevice(device: RemoteDevice) {
+  if (device.online) return;
+  if (!window.confirm(`确认删除离线设备“${device.name}”吗？该设备的历史会话记录会保留。`)) return;
+  loading.value = true;
+  error.value = "";
+  try {
+    await deleteDevice(device.id);
+    await refresh();
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    loading.value = false;
+  }
 }
 
 function backToDevices() {
@@ -1105,24 +1121,26 @@ function transportLabel(status: typeof transportState.value) {
         </button>
       </div>
       <div v-if="devices.length" class="device-list">
-        <button
+        <div
           v-for="device in devices"
           :key="device.id"
           class="device-card"
           :class="{ offline: !device.online }"
-          type="button"
-          :disabled="!device.online"
-          @click="selectDevice(device)"
         >
-          <span class="device-icon"><Cpu :size="22" /></span>
-          <span class="device-card-main">
-            <strong>{{ device.name }}</strong>
-            <small>{{ device.online ? "在线，可进入控制台" : "离线，请先启动客户端" }}</small>
-            <small v-if="device.tokenName">Token：{{ device.tokenName }}（{{ device.tokenPrefix }}）</small>
-          </span>
-          <span class="device-status" :class="{ online: device.online }">{{ device.online ? "在线" : "离线" }}</span>
-          <ChevronRight :size="19" />
-        </button>
+          <button class="device-card-select" type="button" :disabled="!device.online" @click="selectDevice(device)">
+            <span class="device-icon"><Cpu :size="22" /></span>
+            <span class="device-card-main">
+              <strong>{{ device.name }}</strong>
+              <small>{{ device.online ? "在线，可进入控制台" : "离线，请先启动客户端" }}</small>
+              <small v-if="device.tokenName">Token：{{ device.tokenName }}（{{ device.tokenPrefix }}）</small>
+            </span>
+            <span class="device-status" :class="{ online: device.online }">{{ device.online ? "在线" : "离线" }}</span>
+            <ChevronRight :size="19" />
+          </button>
+          <button v-if="!device.online" class="icon-button compact device-remove" type="button" title="删除离线设备" :disabled="loading" @click="removeDevice(device)">
+            <Trash2 :size="16" />
+          </button>
+        </div>
       </div>
       <div v-else class="device-empty">
         <Cpu :size="30" />

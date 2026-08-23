@@ -391,8 +391,7 @@ button:disabled { cursor: not-allowed; opacity: 0.5; transform: none !important;
 
 .device-card {
   min-width: 0;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  display: flex;
   align-items: center;
   gap: 13px;
   padding: 16px;
@@ -401,12 +400,15 @@ button:disabled { cursor: not-allowed; opacity: 0.5; transform: none !important;
   background: var(--surface);
   color: var(--ink);
   text-align: left;
-  cursor: pointer;
   transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
 }
 
-.device-card:not(:disabled):hover { border-color: rgba(26, 169, 157, 0.62); box-shadow: 0 10px 24px rgba(26, 169, 157, 0.12); }
-.device-card:disabled { cursor: not-allowed; opacity: 0.6; }
+.device-card:hover { border-color: rgba(26, 169, 157, 0.62); box-shadow: 0 10px 24px rgba(26, 169, 157, 0.12); }
+.device-card.offline { opacity: 0.72; }
+.device-card-select { min-width: 0; flex: 1; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 13px; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; }
+.device-card-select:not(:disabled) { cursor: pointer; }
+.device-card-select:disabled { cursor: not-allowed; }
+.device-remove { flex: none; }
 .device-icon { width: 46px; height: 46px; display: grid; place-items: center; border-radius: 6px; background: var(--aqua-pale); color: var(--aqua-dark); }
 .device-card.offline .device-icon { background: #eef2f5; color: #8c99a7; }
 .device-card-main { min-width: 0; display: grid; gap: 4px; }
@@ -559,8 +561,8 @@ button:disabled { cursor: not-allowed; opacity: 0.5; transform: none !important;
   .token-list, .device-list { grid-template-columns: minmax(0, 1fr); }
   .device-page { padding: 18px; }
   .device-page-heading { align-items: flex-start; }
-  .device-card { grid-template-columns: auto minmax(0, 1fr) auto; }
-  .device-card > svg:last-child { display: none; }
+  .device-card-select { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .device-card-select > svg:last-child { display: none; }
   .sidebar { position: fixed; z-index: 20; top: 0; bottom: 0; left: 0; width: min(92vw, 420px); padding: max(16px, env(safe-area-inset-top)) 10px max(10px, env(safe-area-inset-bottom)); border-radius: 0 8px 8px 0; box-shadow: 18px 0 45px rgba(15, 31, 47, 0.28); transform: translateX(-105%); transition: transform 180ms ease; }
   .workspace.sidebar-open .sidebar { transform: translateX(0); }
   .workspace.sidebar-open .sidebar-backdrop { display: block; position: fixed; inset: 0; z-index: 15; background: rgba(16, 32, 51, 0.42); cursor: pointer; }

@@ -89,13 +89,13 @@ release\codex-remote-agent\
   --device "办公室电脑"
 ```
 
-登录成功后启动转发：
+登录命令只负责向服务端登记设备并保存本机配置，完成后会正常退出；请再执行下面的常驻命令：
 
 ```powershell
 .\codex-remote-agent.exe agent
 ```
 
-也可以双击 `start-agent.cmd`。客户端每次启动和重连都会校验 Token；网络故障会自动重连。客户端配置和本地缓存保存在 `DATA_DIR`，默认目录为 `data-remote-agent`，不会打印完整 Token。
+也可以双击 `start-agent.cmd`。同一个 `DATA_DIR` 重复登录同一个服务端会复用原设备 ID，不会新增重复设备；如需清理已经产生的离线重复设备，可在网页设备列表点击删除。客户端每次启动和重连都会校验 Token；网络故障会自动重连。客户端配置和本地缓存保存在 `DATA_DIR`，默认目录为 `data-remote-agent`，不会打印完整 Token。
 
 ## 网页功能
 

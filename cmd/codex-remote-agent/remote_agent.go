@@ -69,9 +69,13 @@ func loginRemoteAgent(dataDir string) {
 		}
 	}
 	serverURL = strings.TrimRight(serverURL, "/")
+	deviceID := loginDeviceID(dataDir, serverURL)
+	if deviceID == "" {
+		deviceID = randomID()
+	}
 	requestBody, _ := json.Marshal(map[string]string{
 		"token":      token,
-		"deviceId":   randomID(),
+		"deviceId":   deviceID,
 		"deviceName": deviceName,
 	})
 	response, err := http.Post(serverURL+"/api/agent/login", "application/json", bytes.NewReader(requestBody))
@@ -99,7 +103,18 @@ func loginRemoteAgent(dataDir string) {
 		log.Fatal(err)
 	}
 	log.Printf("客户端已登录: %s", config.DeviceName)
-	log.Printf("启动转发: codex-remote-agent agent")
+	log.Printf("登录配置已保存；此命令会退出，请另行运行: codex-remote-agent agent")
+}
+
+func loginDeviceID(dataDir, serverURL string) string {
+	config, err := loadRemoteAgentConfig(dataDir)
+	if err != nil {
+		return ""
+	}
+	if !strings.EqualFold(strings.TrimRight(config.ServerURL, "/"), strings.TrimRight(serverURL, "/")) {
+		return ""
+	}
+	return config.DeviceID
 }
 
 func runRemoteAgent(root, cwd, dataDir string) {

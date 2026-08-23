@@ -672,6 +672,7 @@ func main() {
 	mux.HandleFunc("/api/openapi.json", server.openapi)
 	mux.HandleFunc("/api/health", server.health)
 	mux.HandleFunc("/api/devices", server.devices)
+	mux.HandleFunc("/api/devices/", server.deviceItem)
 	mux.HandleFunc("/api/settings", server.settings)
 	mux.HandleFunc("/api/uploads", server.uploads)
 	mux.HandleFunc("/api/uploads/", server.uploadFile)
@@ -1106,6 +1107,40 @@ func (s *relayServer) health(w http.ResponseWriter, request *http.Request) {
 func (s *relayServer) devices(w http.ResponseWriter, request *http.Request) {
 	user, _ := s.userFromRequest(request)
 	writeJSON(w, map[string]interface{}{"devices": s.store.devicesForUser(user.ID, s.deviceOnline)})
+}
+
+func (s *relayServer) deviceItem(w http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodDelete {
+		methodNotAllowed(w)
+		return
+	}
+	user, ok := s.userFromRequest(request)
+	if !ok {
+		writeErrorStatus(w, http.StatusUnauthorized, "请先登录")
+		return
+	}
+	deviceID := strings.Trim(strings.TrimPrefix(request.URL.Path, "/api/devices/"), "/")
+	if deviceID == "" {
+		writeErrorStatus(w, http.StatusNotFound, "设备不存在")
+		return
+	}
+	if !s.store.deviceOwnedBy(user.ID, deviceID) {
+		writeErrorStatus(w, http.StatusNotFound, "设备不存在")
+		return
+	}
+	if s.deviceOnline(deviceID) {
+		writeErrorStatus(w, http.StatusConflict, "在线设备不能删除，请先停止客户端 agent")
+		return
+	}
+	if err := s.store.deleteDevice(user.ID, deviceID); err != nil {
+		if err.Error() == "设备不存在" {
+			writeErrorStatus(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeErrorStatus(w, http.StatusInternalServerError, "删除设备失败")
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
 }
 
 func (s *relayServer) settings(w http.ResponseWriter, request *http.Request) {
@@ -1619,6 +1654,7 @@ func (s *relayServer) openapi(w http.ResponseWriter, request *http.Request) {
 			"/api/agent/ws":                 map[string]interface{}{"get": map[string]string{"summary": "客户端 WebSocket 反向连接"}},
 			"/api/p2p/ws":                   map[string]interface{}{"get": map[string]string{"summary": "网页 WebRTC SDP/ICE 信令连接"}},
 			"/api/devices":                  map[string]interface{}{"get": map[string]string{"summary": "设备列表及在线状态"}},
+			"/api/devices/{id}":             map[string]interface{}{"delete": map[string]string{"summary": "删除离线设备"}},
 			"/api/threads":                  map[string]interface{}{"get": map[string]string{"summary": "从在线客户端读取历史对话"}},
 			"/api/threads/{id}":             map[string]interface{}{"delete": map[string]string{"summary": "归档 Codex 对话"}},
 			"/api/threads/{id}/resume":      map[string]interface{}{"post": map[string]string{"summary": "恢复 Codex 对话"}},

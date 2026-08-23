@@ -124,13 +124,13 @@ $env:CODEX_LINK_BUILD_SERVER = "root@your-build-host"
 
 Token 可以从网页的“账号安全 -> 客户端 Token”中创建和复制。也可以不填写 `--token`，程序会在控制台交互式读取。
 
-登录成功后执行：
+登录命令只负责向服务端登记设备并保存本机配置，完成后会正常退出；请再执行下面的常驻命令：
 
 ```powershell
 .\codex-remote-agent.exe agent
 ```
 
-或双击 `start-agent.cmd`。客户端配置保存为本机 `data-remote-agent\remote-agent.json`，包含服务端地址、Token、设备 ID 和设备名称；同目录还会保存本机 Codex 会话缓存。客户端每次启动和重连都会校验 Token；Token 刷新或删除后，客户端需要重新登录。网络故障会每 5 秒自动重连。
+或双击 `start-agent.cmd`。同一个数据目录重复登录同一个服务端会复用原设备 ID，不会新增重复设备；网页设备列表可以删除离线设备以清理历史重复记录。客户端配置保存为本机 `data-remote-agent\remote-agent.json`，包含服务端地址、Token、设备 ID 和设备名称；同目录还会保存本机 Codex 会话缓存。客户端每次启动和重连都会校验 Token；Token 刷新或删除后，客户端需要重新登录。网络故障会每 5 秒自动重连。
 
 网页和客户端使用同一个服务端账号。登录网页后先选择设备，再进入对应 Codex 控制台；设备卡片会显示在线状态和使用的 Token。对话、输出、审批、图片和取消操作都会由服务端转发到所选客户端。
 

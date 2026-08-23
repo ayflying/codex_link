@@ -159,6 +159,10 @@ export async function getDevices() {
   return request<{ devices: RemoteDevice[] }>("/api/devices");
 }
 
+export async function deleteDevice(deviceId: string) {
+  return request<{ ok: boolean }>(`/api/devices/${encodeURIComponent(deviceId)}`, { method: "DELETE" });
+}
+
 export async function createSession(prompt?: string, deviceId?: string) {
   return request<{ session: SessionRecord }>(withDevice("/api/sessions", deviceId), {
     method: "POST",
