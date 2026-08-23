@@ -32,14 +32,31 @@ export type AuthStatus = {
   authenticated: boolean;
   username?: string;
   registrationOpen?: boolean;
+  tokens?: AccessToken[];
+};
+
+export type AccessToken = {
+  id: string;
+  name: string;
+  token: string;
+  prefix: string;
+  createdAt: string;
+  updatedAt: string;
+  refreshedAt?: string;
+  lastUsedAt?: string;
+  lastUsedDeviceId?: string;
 };
 
 export type RemoteDevice = {
   id: string;
   name: string;
   online: boolean;
+  tokenId?: string;
+  tokenName?: string;
+  tokenPrefix?: string;
   createdAt: string;
   updatedAt: string;
+  lastSeenAt?: string;
 };
 
 export type AppSettings = {
@@ -82,6 +99,27 @@ export async function changePassword(currentPassword: string, newPassword: strin
     method: "POST",
     body: JSON.stringify({ currentPassword, newPassword })
   });
+}
+
+export async function getTokens() {
+  return request<{ tokens: AccessToken[] }>('/api/auth/tokens');
+}
+
+export async function createToken(name: string) {
+  return request<{ token: AccessToken }>('/api/auth/tokens', {
+    method: 'POST',
+    body: JSON.stringify({ name })
+  });
+}
+
+export async function refreshToken(tokenId: string) {
+  return request<{ token: AccessToken }>(`/api/auth/tokens/${encodeURIComponent(tokenId)}/refresh`, {
+    method: 'POST'
+  });
+}
+
+export async function deleteToken(tokenId: string) {
+  return request<{ ok: boolean }>(`/api/auth/tokens/${encodeURIComponent(tokenId)}`, { method: 'DELETE' });
 }
 
 export async function getSettings(deviceId?: string) {

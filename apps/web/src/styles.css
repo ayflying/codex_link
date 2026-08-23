@@ -96,6 +96,12 @@ button {
   align-items: center;
 }
 
+.topbar-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .topbar {
   justify-content: space-between;
 }
@@ -250,6 +256,233 @@ button:disabled {
 .password-panel small {
   grid-column: 1 / -1;
   color: #0f766e;
+}
+
+.account-actions {
+  display: flex;
+  min-width: 0;
+  gap: 8px;
+  align-items: center;
+}
+
+.account-actions .password-form {
+  flex: 1;
+}
+
+.token-manager {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid #e2e7ee;
+}
+
+.token-heading,
+.token-card-heading,
+.token-value-row,
+.token-card-actions,
+.device-page-heading {
+  display: flex;
+  align-items: center;
+}
+
+.token-heading,
+.device-page-heading {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.token-heading p,
+.token-card p,
+.device-page-heading p,
+.device-empty p {
+  margin: 4px 0 0;
+  color: #5c6879;
+}
+
+.token-heading > span {
+  color: #687384;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.token-create {
+  display: flex;
+  gap: 8px;
+}
+
+.token-create input {
+  min-width: 0;
+  flex: 1;
+  min-height: 42px;
+  border: 1px solid #d2d9e4;
+  border-radius: 8px;
+  padding: 10px 12px;
+  outline: none;
+}
+
+.token-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px;
+}
+
+.token-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #d7dde7;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.token-card-heading {
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.token-card-heading small {
+  overflow: hidden;
+  color: #687384;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.token-value-row {
+  gap: 6px;
+}
+
+.token-value-row code {
+  min-width: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 7px;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #253247;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.token-card p {
+  font-size: 12px;
+}
+
+.token-card-actions {
+  gap: 8px;
+}
+
+.token-card-actions .icon-button,
+.token-card-actions .danger {
+  height: 34px;
+  min-width: 0;
+}
+
+.token-empty {
+  margin: 0;
+  color: #687384;
+  font-size: 13px;
+}
+
+.device-page {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 18px;
+  padding: 18px;
+  overflow-y: auto;
+  border: 1px solid #d7dde7;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.device-page-heading h2 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.device-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
+}
+
+.device-card {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 11px;
+  padding: 14px;
+  border: 1px solid #d7dde7;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #151923;
+  text-align: left;
+  cursor: pointer;
+}
+
+.device-card:not(:disabled):hover {
+  border-color: #0f766e;
+  box-shadow: 0 5px 16px rgba(15, 118, 110, 0.12);
+}
+
+.device-card:disabled {
+  cursor: not-allowed;
+  opacity: 0.64;
+}
+
+.device-icon {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: #e7f5f2;
+  color: #0f766e;
+}
+
+.device-card-main {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.device-card-main strong,
+.device-card-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.device-card-main small {
+  color: #687384;
+}
+
+.device-status {
+  color: #8a220d;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.device-status.online {
+  color: #0f766e;
+}
+
+.device-empty {
+  min-height: 220px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  color: #687384;
+  text-align: center;
+}
+
+.device-empty strong {
+  color: #253247;
 }
 
 .password-form {
@@ -800,6 +1033,12 @@ pre {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .account-actions,
+  .token-create {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .password-form {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -807,6 +1046,35 @@ pre {
   .password-form .primary,
   .password-form .sign-out {
     width: 100%;
+  }
+
+  .password-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .token-create .primary {
+    width: 100%;
+  }
+
+  .token-list,
+  .device-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .device-page {
+    padding: 14px;
+  }
+
+  .device-page-heading {
+    align-items: flex-start;
+  }
+
+  .device-card {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .device-card > svg:last-child {
+    display: none;
   }
 
   .sidebar {

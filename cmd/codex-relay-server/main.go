@@ -88,10 +88,13 @@ type Device struct {
 	ID          string `json:"id"`
 	UserID      string `json:"userId"`
 	Name        string `json:"name"`
-	TokenHash   string `json:"tokenHash"`
-	TokenPrefix string `json:"tokenPrefix"`
+	TokenID     string `json:"tokenId,omitempty"`
+	TokenName   string `json:"tokenName,omitempty"`
+	TokenHash   string `json:"tokenHash,omitempty"`
+	TokenPrefix string `json:"tokenPrefix,omitempty"`
 	CreatedAt   string `json:"createdAt"`
 	UpdatedAt   string `json:"updatedAt"`
+	LastSeenAt  string `json:"lastSeenAt,omitempty"`
 }
 
 type ownedSession struct {
@@ -573,9 +576,8 @@ func (s *sessionTokens) remove(token string) {
 }
 
 type relayServer struct {
-	store    *relayStore
+	store    *mysqlRelayStore
 	webDir   string
-	tokens   *sessionTokens
 	mu       sync.Mutex
 	agents   map[string]*agentPeer
 	upgrader websocket.Upgrader
@@ -585,31 +587,40 @@ type agentPeer struct {
 	server   *relayServer
 	userID   string
 	deviceID string
+	tokenID  string
 	conn     *websocket.Conn
 	write    sync.Mutex
 	pending  map[string]chan envelope
 	mu       sync.Mutex
 }
 
-func newRelayServer(dataDir, webDir string) *relayServer {
+func newRelayServer(uploadDir, webDir string) (*relayServer, error) {
+	store, err := newMySQLRelayStore(uploadDir)
+	if err != nil {
+		return nil, err
+	}
 	return &relayServer{
-		store:  newRelayStore(dataDir),
+		store:  store,
 		webDir: webDir,
-		tokens: newSessionTokens(),
 		agents: map[string]*agentPeer{},
 		upgrader: websocket.Upgrader{CheckOrigin: func(request *http.Request) bool {
 			origin := request.Header.Get("Origin")
 			return origin == "" || sameOrigin(request, origin)
 		}},
-	}
+	}, nil
 }
 
 func main() {
 	dataDir := env("DATA_DIR", "/data")
+	uploadDir := env("UPLOAD_DIR", filepath.Join(dataDir, "uploads"))
 	webDir := env("WEB_DIR", "/app/web")
 	host := env("HOST", "0.0.0.0")
 	port := env("PORT", "8787")
-	server := newRelayServer(dataDir, webDir)
+	server, err := newRelayServer(uploadDir, webDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer server.store.close()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/auth/status", server.authStatus)
 	mux.HandleFunc("/api/auth/register", server.authRegister)
@@ -617,7 +628,10 @@ func main() {
 	mux.HandleFunc("/api/auth/logout", server.authLogout)
 	mux.HandleFunc("/api/auth/password", server.authPassword)
 	mux.HandleFunc("/api/auth/token", server.authToken)
+	mux.HandleFunc("/api/auth/tokens", server.authTokens)
+	mux.HandleFunc("/api/auth/tokens/", server.authTokenItem)
 	mux.HandleFunc("/api/agent/login", server.agentLogin)
+	mux.HandleFunc("/api/agent/validate", server.agentValidate)
 	mux.HandleFunc("/api/agent/ws", server.agentWebSocket)
 	mux.HandleFunc("/api/openapi.json", server.openapi)
 	mux.HandleFunc("/api/health", server.health)
@@ -637,11 +651,16 @@ func main() {
 
 func (s *relayServer) authStatus(w http.ResponseWriter, request *http.Request) {
 	user, ok := s.userFromRequest(request)
+	records := []accessTokenRecord{}
+	if ok {
+		records, _ = s.store.listTokens(user.ID)
+	}
 	writeJSON(w, map[string]interface{}{
 		"authenticated":    ok,
 		"username":         user.Username,
 		"registrationOpen": strings.EqualFold(env("ALLOW_REGISTRATION", "true"), "true"),
-		"apiToken":         s.store.apiTokenStatus(user.ID),
+		"tokens":           tokenListJSON(records),
+		"apiToken":         map[string]interface{}{"enabled": len(records) > 0, "count": len(records)},
 	})
 }
 
@@ -667,7 +686,12 @@ func (s *relayServer) authRegister(w http.ResponseWriter, request *http.Request)
 		writeErrorStatus(w, http.StatusConflict, err.Error())
 		return
 	}
-	s.setCookie(w, s.tokens.create(user.ID))
+	sessionToken, err := s.store.createWebSession(user.ID)
+	if err != nil {
+		writeErrorStatus(w, http.StatusInternalServerError, "创建登录会话失败")
+		return
+	}
+	s.setCookie(w, sessionToken)
 	writeJSONStatus(w, http.StatusCreated, map[string]interface{}{"ok": true, "authenticated": true, "username": user.Username})
 }
 
@@ -689,7 +713,12 @@ func (s *relayServer) authLogin(w http.ResponseWriter, request *http.Request) {
 		writeErrorStatus(w, http.StatusUnauthorized, "用户名或密码不正确")
 		return
 	}
-	s.setCookie(w, s.tokens.create(user.ID))
+	sessionToken, err := s.store.createWebSession(user.ID)
+	if err != nil {
+		writeErrorStatus(w, http.StatusInternalServerError, "创建登录会话失败")
+		return
+	}
+	s.setCookie(w, sessionToken)
 	writeJSON(w, map[string]interface{}{"ok": true, "authenticated": true, "username": user.Username})
 }
 
@@ -699,7 +728,7 @@ func (s *relayServer) authLogout(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if cookie, err := request.Cookie(authCookieName); err == nil {
-		s.tokens.remove(cookie.Value)
+		s.store.removeWebSession(cookie.Value)
 	}
 	s.clearCookie(w)
 	writeJSON(w, map[string]bool{"ok": true})
@@ -738,20 +767,104 @@ func (s *relayServer) authToken(w http.ResponseWriter, request *http.Request) {
 	}
 	switch request.Method {
 	case http.MethodGet:
-		writeJSON(w, s.store.apiTokenStatus(user.ID))
-	case http.MethodPost:
-		token, status, err := s.store.rotateAPIToken(user.ID)
+		records, err := s.store.listTokens(user.ID)
 		if err != nil {
 			writeError(w, err)
 			return
 		}
-		writeJSONStatus(w, http.StatusCreated, map[string]interface{}{"token": token, "status": status, "note": "请立即保存 token，服务端不会再次显示完整值。"})
+		writeJSON(w, map[string]interface{}{"tokens": tokenListJSON(records)})
+	case http.MethodPost:
+		var body struct {
+			Name string `json:"name"`
+		}
+		if request.Body != nil {
+			_ = decodeJSON(request, &body)
+		}
+		record, err := s.store.createToken(user.ID, body.Name)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSONStatus(w, http.StatusCreated, map[string]interface{}{"token": tokenJSON(record), "note": "Token 将始终显示在当前账号的 Token 列表中，请妥善保管。"})
 	case http.MethodDelete:
-		s.store.clearAPIToken(user.ID)
+		tokenID := request.URL.Query().Get("tokenId")
+		if tokenID == "" {
+			writeErrorStatus(w, http.StatusBadRequest, "请通过 tokenId 指定要删除的 Token")
+			return
+		}
+		if err := s.store.deleteToken(user.ID, tokenID); err != nil {
+			writeErrorStatus(w, http.StatusNotFound, err.Error())
+			return
+		}
 		writeJSON(w, map[string]bool{"ok": true})
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+func (s *relayServer) authTokens(w http.ResponseWriter, request *http.Request) {
+	user, ok := s.userFromRequest(request)
+	if !ok {
+		writeErrorStatus(w, http.StatusUnauthorized, "请先登录")
+		return
+	}
+	switch request.Method {
+	case http.MethodGet:
+		records, err := s.store.listTokens(user.ID)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, map[string]interface{}{"tokens": tokenListJSON(records)})
+	case http.MethodPost:
+		var body struct {
+			Name string `json:"name"`
+		}
+		if err := decodeJSON(request, &body); err != nil {
+			writeErrorStatus(w, http.StatusBadRequest, "请求格式不正确")
+			return
+		}
+		record, err := s.store.createToken(user.ID, body.Name)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSONStatus(w, http.StatusCreated, map[string]interface{}{"token": tokenJSON(record)})
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+func (s *relayServer) authTokenItem(w http.ResponseWriter, request *http.Request) {
+	user, ok := s.userFromRequest(request)
+	if !ok {
+		writeErrorStatus(w, http.StatusUnauthorized, "请先登录")
+		return
+	}
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(request.URL.Path, "/api/auth/tokens/"), "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		writeErrorStatus(w, http.StatusNotFound, "Token 不存在")
+		return
+	}
+	tokenID := parts[0]
+	if len(parts) == 2 && parts[1] == "refresh" && request.Method == http.MethodPost {
+		record, err := s.store.refreshToken(user.ID, tokenID)
+		if err != nil {
+			writeErrorStatus(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeJSON(w, map[string]interface{}{"token": tokenJSON(record)})
+		return
+	}
+	if len(parts) == 1 && request.Method == http.MethodDelete {
+		if err := s.store.deleteToken(user.ID, tokenID); err != nil {
+			writeErrorStatus(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeJSON(w, map[string]bool{"ok": true})
+		return
+	}
+	writeErrorStatus(w, http.StatusNotFound, "接口不存在")
 }
 
 func (s *relayServer) agentLogin(w http.ResponseWriter, request *http.Request) {
@@ -760,8 +873,7 @@ func (s *relayServer) agentLogin(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	var body struct {
-		Username   string `json:"username"`
-		Password   string `json:"password"`
+		Token      string `json:"token"`
 		DeviceID   string `json:"deviceId"`
 		DeviceName string `json:"deviceName"`
 	}
@@ -769,32 +881,50 @@ func (s *relayServer) agentLogin(w http.ResponseWriter, request *http.Request) {
 		writeErrorStatus(w, http.StatusBadRequest, "请求格式不正确")
 		return
 	}
-	user, ok := s.store.authenticate(body.Username, body.Password)
+	tokenValue := strings.TrimSpace(body.Token)
+	if tokenValue == "" {
+		tokenValue = bearerToken(request)
+	}
+	user, tokenRecord, ok := s.store.userForAPIToken(tokenValue)
 	if !ok {
-		writeErrorStatus(w, http.StatusUnauthorized, "用户名或密码不正确")
+		writeErrorStatus(w, http.StatusUnauthorized, "Token 无效或已删除")
 		return
 	}
-	device, token, err := s.store.loginDevice(user.ID, body.DeviceID, body.DeviceName)
+	device, err := s.store.loginDevice(user.ID, tokenRecord.ID, tokenRecord.Prefix, body.DeviceID, body.DeviceName)
 	if err != nil {
 		writeErrorStatus(w, http.StatusConflict, err.Error())
 		return
 	}
-	writeJSON(w, map[string]interface{}{"deviceId": device.ID, "deviceName": device.Name, "agentToken": token})
+	writeJSON(w, map[string]interface{}{"deviceId": device.ID, "deviceName": device.Name, "tokenId": tokenRecord.ID, "tokenName": tokenRecord.Name, "tokenPrefix": tokenRecord.Prefix})
+}
+
+func (s *relayServer) agentValidate(w http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	deviceID := request.URL.Query().Get("deviceId")
+	device, token, ok := s.store.verifyAgent(deviceID, bearerToken(request))
+	if !ok {
+		writeErrorStatus(w, http.StatusUnauthorized, "Token 无效、已删除或未绑定此设备")
+		return
+	}
+	writeJSON(w, map[string]interface{}{"ok": true, "deviceId": device.ID, "deviceName": device.Name, "tokenId": token.ID, "tokenName": token.Name})
 }
 
 func (s *relayServer) agentWebSocket(w http.ResponseWriter, request *http.Request) {
 	deviceID := request.URL.Query().Get("deviceId")
 	token := bearerToken(request)
-	device, ok := s.store.verifyDevice(deviceID, token)
+	device, tokenRecord, ok := s.store.verifyAgent(deviceID, token)
 	if !ok {
-		writeErrorStatus(w, http.StatusUnauthorized, "客户端凭据无效")
+		writeErrorStatus(w, http.StatusUnauthorized, "Token 无效、已删除或未绑定此设备")
 		return
 	}
 	conn, err := s.upgrader.Upgrade(w, request, nil)
 	if err != nil {
 		return
 	}
-	peer := &agentPeer{server: s, userID: device.UserID, deviceID: device.ID, conn: conn, pending: map[string]chan envelope{}}
+	peer := &agentPeer{server: s, userID: device.UserID, deviceID: device.ID, tokenID: tokenRecord.ID, conn: conn, pending: map[string]chan envelope{}}
 	s.registerPeer(peer)
 	defer func() {
 		s.unregisterPeer(peer)
@@ -837,7 +967,11 @@ func (s *relayServer) handleAgentMessage(peer *agentPeer, message envelope) {
 func (s *relayServer) health(w http.ResponseWriter, request *http.Request) {
 	user, _ := s.userFromRequest(request)
 	devices := s.store.devicesForUser(user.ID, s.deviceOnline)
-	writeJSON(w, map[string]interface{}{"ok": true, "mode": "relay-server", "devices": devices, "connectedDevices": s.agentCount(user.ID)})
+	databaseStatus := "ok"
+	if err := s.store.ping(); err != nil {
+		databaseStatus = "error"
+	}
+	writeJSON(w, map[string]interface{}{"ok": databaseStatus == "ok", "mode": "relay-server", "database": databaseStatus, "devices": devices, "connectedDevices": s.agentCount(user.ID)})
 }
 
 func (s *relayServer) devices(w http.ResponseWriter, request *http.Request) {
@@ -1163,9 +1297,7 @@ func (s *relayServer) resolveDevice(userID string, request *http.Request, sessio
 }
 
 func (s *relayServer) deviceOwnedBy(userID, deviceID string) bool {
-	s.store.mu.Lock()
-	defer s.store.mu.Unlock()
-	return s.store.devices[deviceID].UserID == userID
+	return s.store.deviceOwnedBy(userID, deviceID)
 }
 
 func (s *relayServer) command(userID, deviceID, action string, payload interface{}) (json.RawMessage, error) {
@@ -1301,16 +1433,13 @@ func (s *relayServer) publicPath(path string) bool {
 
 func (s *relayServer) userFromRequest(request *http.Request) (User, bool) {
 	if token := bearerToken(request); token != "" {
-		if user, ok := s.store.userForAPIToken(token); ok {
+		if user, _, ok := s.store.userForAPIToken(token); ok {
 			return user, true
 		}
 	}
 	if cookie, err := request.Cookie(authCookieName); err == nil {
-		if userID := s.tokens.userID(cookie.Value); userID != "" {
-			s.store.mu.Lock()
-			user, ok := s.store.users[userID]
-			s.store.mu.Unlock()
-			return user, ok
+		if user, ok := s.store.userForWebSession(cookie.Value); ok {
+			return user, true
 		}
 	}
 	return User{}, false
@@ -1331,20 +1460,39 @@ func (s *relayServer) openapi(w http.ResponseWriter, request *http.Request) {
 	}
 	writeJSON(w, map[string]interface{}{
 		"openapi": "3.0.3",
-		"info":    map[string]string{"title": "Codex Relay Server API", "version": "1.0.0", "description": "中心服务端 API。运行 Codex 的本机客户端使用 WebSocket 反向连接。"},
+		"info":    map[string]string{"title": "Codex Link API", "version": "1.1.0", "description": "中心服务端 API。运行 Codex 的本机客户端使用 Token 和 WebSocket 反向连接。"},
+		"servers": []map[string]string{{"url": "/"}},
+		"components": map[string]interface{}{
+			"securitySchemes": map[string]interface{}{
+				"bearerAuth": map[string]string{"type": "http", "scheme": "bearer", "bearerFormat": "Codex Link Token"},
+				"webSession": map[string]string{"type": "apiKey", "in": "cookie", "name": authCookieName},
+			},
+		},
 		"paths": map[string]interface{}{
-			"/api/auth/register":           map[string]interface{}{"post": map[string]string{"summary": "注册服务端账号"}},
-			"/api/auth/login":              map[string]interface{}{"post": map[string]string{"summary": "网页/API 登录"}},
-			"/api/agent/login":             map[string]interface{}{"post": map[string]string{"summary": "本机客户端登录并领取设备令牌"}},
-			"/api/agent/ws":                map[string]interface{}{"get": map[string]string{"summary": "客户端 WebSocket 反向连接"}},
-			"/api/devices":                 map[string]interface{}{"get": map[string]string{"summary": "设备列表及在线状态"}},
-			"/api/threads":                 map[string]interface{}{"get": map[string]string{"summary": "从在线客户端读取历史对话"}},
-			"/api/sessions":                map[string]interface{}{"get": map[string]string{"summary": "读取同步会话缓存"}, "post": map[string]string{"summary": "创建新会话"}},
-			"/api/sessions/{id}/events":    map[string]interface{}{"get": map[string]string{"summary": "SSE 流式事件"}},
-			"/api/sessions/{id}/messages":  map[string]interface{}{"post": map[string]string{"summary": "发送消息并经 WebSocket 转发"}},
-			"/api/sessions/{id}/approvals": map[string]interface{}{"post": map[string]string{"summary": "提交审批"}},
-			"/api/sessions/{id}/cancel":    map[string]interface{}{"post": map[string]string{"summary": "取消当前 turn"}},
-			"/api/uploads":                 map[string]interface{}{"post": map[string]string{"summary": "上传图片，命令转发时同步到本机"}},
+			"/api/health":                   map[string]interface{}{"get": map[string]string{"summary": "服务端和 MySQL 健康状态"}},
+			"/api/auth/status":              map[string]interface{}{"get": map[string]string{"summary": "查询网页登录状态"}},
+			"/api/auth/register":            map[string]interface{}{"post": map[string]string{"summary": "注册服务端账号"}},
+			"/api/auth/login":               map[string]interface{}{"post": map[string]string{"summary": "网页登录"}},
+			"/api/auth/logout":              map[string]interface{}{"post": map[string]string{"summary": "退出网页登录"}},
+			"/api/auth/password":            map[string]interface{}{"post": map[string]string{"summary": "修改账号密码"}},
+			"/api/auth/token":               map[string]interface{}{"get": map[string]string{"summary": "兼容接口：查询 Token 列表"}, "post": map[string]string{"summary": "兼容接口：创建 Token"}, "delete": map[string]string{"summary": "兼容接口：删除指定 Token"}},
+			"/api/auth/tokens":              map[string]interface{}{"get": map[string]string{"summary": "查询当前账号的全部 Token"}, "post": map[string]string{"summary": "创建 Token"}},
+			"/api/auth/tokens/{id}/refresh": map[string]interface{}{"post": map[string]string{"summary": "刷新指定 Token"}},
+			"/api/auth/tokens/{id}":         map[string]interface{}{"delete": map[string]string{"summary": "删除指定 Token"}},
+			"/api/agent/login":              map[string]interface{}{"post": map[string]string{"summary": "本机客户端使用 Token 登录设备"}},
+			"/api/agent/validate":           map[string]interface{}{"get": map[string]string{"summary": "校验客户端 Token 和设备绑定"}},
+			"/api/agent/ws":                 map[string]interface{}{"get": map[string]string{"summary": "客户端 WebSocket 反向连接"}},
+			"/api/devices":                  map[string]interface{}{"get": map[string]string{"summary": "设备列表及在线状态"}},
+			"/api/threads":                  map[string]interface{}{"get": map[string]string{"summary": "从在线客户端读取历史对话"}},
+			"/api/threads/{id}":             map[string]interface{}{"delete": map[string]string{"summary": "归档 Codex 对话"}},
+			"/api/threads/{id}/resume":      map[string]interface{}{"post": map[string]string{"summary": "恢复 Codex 对话"}},
+			"/api/sessions":                 map[string]interface{}{"get": map[string]string{"summary": "读取同步会话缓存"}, "post": map[string]string{"summary": "创建新会话"}},
+			"/api/sessions/{id}/events":     map[string]interface{}{"get": map[string]string{"summary": "SSE 流式事件"}},
+			"/api/sessions/{id}/messages":   map[string]interface{}{"post": map[string]string{"summary": "发送消息并经 WebSocket 转发"}},
+			"/api/sessions/{id}/approvals":  map[string]interface{}{"post": map[string]string{"summary": "提交审批"}},
+			"/api/sessions/{id}/cancel":     map[string]interface{}{"post": map[string]string{"summary": "取消当前 turn"}},
+			"/api/uploads":                  map[string]interface{}{"post": map[string]string{"summary": "上传图片附件"}},
+			"/api/uploads/{id}":             map[string]interface{}{"get": map[string]string{"summary": "读取当前用户的图片附件"}},
 		},
 	})
 }

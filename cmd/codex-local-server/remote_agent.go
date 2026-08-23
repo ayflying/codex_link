@@ -21,7 +21,7 @@ import (
 
 type remoteAgentConfig struct {
 	ServerURL  string `json:"serverUrl"`
-	AgentToken string `json:"agentToken"`
+	Token      string `json:"token"`
 	DeviceID   string `json:"deviceId"`
 	DeviceName string `json:"deviceName"`
 }
@@ -48,27 +48,25 @@ func isRemoteAgentMode() bool {
 
 func loginRemoteAgent(dataDir string) {
 	serverURL := firstNonEmptyString(argValue("--server"), os.Getenv("REMOTE_SERVER"))
-	username := firstNonEmptyString(argValue("--username"), os.Getenv("REMOTE_USERNAME"))
-	password := firstNonEmptyString(argValue("--password"), os.Getenv("REMOTE_PASSWORD"))
+	token := firstNonEmptyString(argValue("--token"), os.Getenv("REMOTE_TOKEN"))
 	deviceName := firstNonEmptyString(argValue("--device"), os.Getenv("REMOTE_DEVICE_NAME"), localDeviceName())
-	if serverURL == "" || username == "" {
-		log.Fatal("用法: codex-remote-agent login --server https://server.example --username 用户名 [--device 设备名称]")
+	if serverURL == "" {
+		log.Fatal("用法: codex-remote-agent login --server https://server.example --token crs_xxx [--device 设备名称]")
 	}
-	if password == "" {
-		fmt.Fprint(os.Stderr, "服务端密码: ")
+	if token == "" {
+		fmt.Fprint(os.Stderr, "服务端 Token: ")
 		input, err := bufio.NewReader(os.Stdin).ReadString('\n')
 		if err != nil && strings.TrimSpace(input) == "" {
 			log.Fatal("未读取到密码")
 		}
-		password = strings.TrimSpace(input)
-		if password == "" {
-			log.Fatal("密码不能为空")
+		token = strings.TrimSpace(input)
+		if token == "" {
+			log.Fatal("Token 不能为空")
 		}
 	}
 	serverURL = strings.TrimRight(serverURL, "/")
 	requestBody, _ := json.Marshal(map[string]string{
-		"username":   username,
-		"password":   password,
+		"token":      token,
 		"deviceId":   randomID(),
 		"deviceName": deviceName,
 	})
@@ -83,17 +81,16 @@ func loginRemoteAgent(dataDir string) {
 		log.Fatalf("登录失败: %v", firstNonEmptyString(stringValue(result["error"]), response.Status))
 	}
 	var result struct {
-		AgentToken string `json:"agentToken"`
 		DeviceID   string `json:"deviceId"`
 		DeviceName string `json:"deviceName"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 		log.Fatal(err)
 	}
-	if result.AgentToken == "" || result.DeviceID == "" {
-		log.Fatal("服务端未返回设备令牌")
+	if result.DeviceID == "" {
+		log.Fatal("服务端未返回设备 ID")
 	}
-	config := remoteAgentConfig{ServerURL: serverURL, AgentToken: result.AgentToken, DeviceID: result.DeviceID, DeviceName: firstNonEmptyString(result.DeviceName, deviceName)}
+	config := remoteAgentConfig{ServerURL: serverURL, Token: token, DeviceID: result.DeviceID, DeviceName: firstNonEmptyString(result.DeviceName, deviceName)}
 	if err := saveRemoteAgentConfig(dataDir, config); err != nil {
 		log.Fatal(err)
 	}
@@ -104,7 +101,7 @@ func loginRemoteAgent(dataDir string) {
 func runRemoteAgent(root, cwd, dataDir string) {
 	config, err := loadRemoteAgentConfig(dataDir)
 	if err != nil {
-		log.Fatal("客户端尚未登录。请先运行: codex-remote-agent login --server <服务端地址> --username <用户名> --password <密码>")
+		log.Fatal("客户端尚未使用 Token 登录。请先运行: codex-remote-agent login --server <服务端地址> --token <Token>")
 	}
 	if config.DeviceName == "" {
 		config.DeviceName = localDeviceName()
@@ -115,12 +112,47 @@ func runRemoteAgent(root, cwd, dataDir string) {
 	store.SetSessionHook(func(session Session) { agent.send("session", "", "", session) })
 	log.Printf("Codex Remote 客户端: %s", config.DeviceName)
 	log.Printf("服务端: %s", config.ServerURL)
+	if err := agent.validate(); err != nil {
+		if errors.Is(err, errAgentAuth) {
+			log.Fatal("客户端 Token 无效或已删除，请重新执行 login")
+		}
+		log.Printf("服务端暂时不可用: %v；5 秒后重试", err)
+	}
 	for {
 		if err := agent.connectAndServe(); err != nil {
+			if errors.Is(err, errAgentAuth) {
+				log.Fatal("客户端 Token 无效或已删除，请重新执行 login")
+			}
 			log.Printf("服务端连接断开: %v；5 秒后重试", err)
 		}
 		time.Sleep(5 * time.Second)
 	}
+}
+
+var errAgentAuth = errors.New("agent authentication failed")
+
+func (a *remoteAgent) validate() error {
+	endpoint, err := remoteHTTPURL(a.config)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequest(http.MethodGet, endpoint+"/api/agent/validate?deviceId="+url.QueryEscape(a.config.DeviceID), nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "Bearer "+a.config.Token)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusUnauthorized {
+		return errAgentAuth
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("服务端校验失败: %s", response.Status)
+	}
+	return nil
 }
 
 func (a *remoteAgent) connectAndServe() error {
@@ -129,10 +161,13 @@ func (a *remoteAgent) connectAndServe() error {
 		return err
 	}
 	headers := http.Header{}
-	headers.Set("Authorization", "Bearer "+a.config.AgentToken)
+	headers.Set("Authorization", "Bearer "+a.config.Token)
 	conn, response, err := websocket.DefaultDialer.Dial(endpoint, headers)
 	if err != nil {
 		if response != nil {
+			if response.StatusCode == http.StatusUnauthorized {
+				return errAgentAuth
+			}
 			return fmt.Errorf("%s: %s", response.Status, endpoint)
 		}
 		return err
@@ -344,6 +379,19 @@ func remoteWebSocketURL(config remoteAgentConfig) (string, error) {
 	return parsed.String(), nil
 }
 
+func remoteHTTPURL(config remoteAgentConfig) (string, error) {
+	parsed, err := url.Parse(config.ServerURL)
+	if err != nil {
+		return "", err
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", errors.New("服务端地址必须使用 http 或 https")
+	}
+	parsed.Path = ""
+	parsed.RawQuery = ""
+	return strings.TrimRight(parsed.String(), "/"), nil
+}
+
 func loadRemoteAgentConfig(dataDir string) (remoteAgentConfig, error) {
 	var config remoteAgentConfig
 	raw, err := os.ReadFile(filepath.Join(dataDir, "remote-agent.json"))
@@ -353,7 +401,7 @@ func loadRemoteAgentConfig(dataDir string) (remoteAgentConfig, error) {
 	if err := json.Unmarshal(raw, &config); err != nil {
 		return config, err
 	}
-	if config.ServerURL == "" || config.AgentToken == "" || config.DeviceID == "" {
+	if config.ServerURL == "" || config.Token == "" || config.DeviceID == "" {
 		return config, errors.New("客户端登录信息不完整")
 	}
 	return config, nil

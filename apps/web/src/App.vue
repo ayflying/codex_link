@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import {
+  ArrowLeft,
   Check,
   ChevronDown,
   ChevronRight,
   CircleStop,
+  Copy,
   Cpu,
   ImagePlus,
   KeyRound,
   Menu,
   MessageSquarePlus,
+  Plus,
   Play,
   RefreshCw,
   Send,
@@ -20,15 +23,19 @@ import {
 import {
   changePassword,
   cancelTurn,
+  createToken,
   createSession,
+  deleteToken,
   deleteThread,
   getAuthStatus,
   getDevices,
   getHealth,
   getSettings,
   getThreads,
+  getTokens,
   login,
   register,
+  refreshToken,
   logout,
   resumeThread,
   sendApproval,
@@ -37,6 +44,7 @@ import {
   uploadImage,
   type AppSettings,
   type Attachment,
+  type AccessToken,
   type AuthStatus,
   type RemoteDevice,
   type RemoteEvent,
@@ -52,6 +60,9 @@ const currentPassword = ref("");
 const newPassword = ref("");
 const passwordPanelOpen = ref(false);
 const passwordMessage = ref("");
+const tokens = ref<AccessToken[]>([]);
+const tokenName = ref("");
+const tokenMessage = ref("");
 const sessions = ref<SessionRecord[]>([]);
 const activeSessionId = ref("");
 const events = ref<RemoteEvent[]>([]);
@@ -73,6 +84,7 @@ const sidebarOpen = ref(false);
 const collapsedProjects = ref<Set<string>>(new Set());
 
 const activeSession = computed(() => sessions.value.find((session) => session.id === activeSessionId.value));
+const activeDevice = computed(() => devices.value.find((device) => device.id === activeDeviceId.value));
 const groupedSessions = computed(() => {
   const groups = new Map<string, { cwd: string; label: string; sessions: SessionRecord[] }>();
   for (const session of sessions.value) {
@@ -150,19 +162,25 @@ async function refresh() {
   if (!auth.value.authenticated) return;
   error.value = "";
   try {
-    const [healthResult, deviceResult] = await Promise.all([
+    const [healthResult, deviceResult, tokenResult] = await Promise.all([
       getHealth().catch((reason) => ({ error: String(reason) })),
-      getDevices()
+      getDevices(),
+      getTokens()
     ]);
     health.value = healthResult;
     devices.value = deviceResult.devices;
-    if (!activeDeviceId.value || !devices.value.some((device) => device.id === activeDeviceId.value && device.online)) {
-      activeDeviceId.value = devices.value.find((device) => device.online)?.id || "";
+    tokens.value = tokenResult.tokens;
+    if (!activeDeviceId.value) {
+      sessions.value = [];
+      events.value = [];
+      return;
     }
-    const [sessionResult, settingsResult] = await Promise.all([
-      getThreads(activeDeviceId.value),
-      getSettings(activeDeviceId.value)
-    ]);
+    const selectedDevice = devices.value.find((device) => device.id === activeDeviceId.value);
+    if (!selectedDevice?.online) {
+      backToDevices();
+      return;
+    }
+    const [sessionResult, settingsResult] = await Promise.all([getThreads(activeDeviceId.value), getSettings(activeDeviceId.value)]);
     sessions.value = sessionResult.sessions;
     settings.value = settingsResult;
     collapseProjectsByDefault();
@@ -191,6 +209,7 @@ async function submitLogin() {
       : await login(authUsername.value.trim(), loginPassword.value);
     authUsername.value = "";
     loginPassword.value = "";
+    activeDeviceId.value = "";
     await refresh();
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : String(reason);
@@ -224,13 +243,89 @@ async function signOut() {
   activeSessionId.value = "";
   events.value = [];
   sessions.value = [];
+  devices.value = [];
+  tokens.value = [];
+  activeDeviceId.value = "";
   passwordPanelOpen.value = false;
 }
 
-async function selectDevice() {
+async function selectDevice(device: RemoteDevice) {
+  if (!device.online) return;
+  activeDeviceId.value = device.id;
   activeSessionId.value = "";
   events.value = [];
+  sidebarOpen.value = false;
   await refresh();
+}
+
+function backToDevices() {
+  eventSource.value?.close();
+  eventSource.value = null;
+  activeDeviceId.value = "";
+  activeSessionId.value = "";
+  events.value = [];
+  sessions.value = [];
+  streamState.value = "idle";
+}
+
+async function createAccessToken() {
+  loading.value = true;
+  error.value = "";
+  tokenMessage.value = "";
+  try {
+    const result = await createToken(tokenName.value.trim());
+    tokenName.value = "";
+    tokenMessage.value = `Token“${result.token.name}”已创建`;
+    await refreshTokens();
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function rotateAccessToken(token: AccessToken) {
+  if (!window.confirm(`确认刷新“${token.name}”吗？旧 Token 将无法在客户端下次启动或重连时使用。`)) return;
+  loading.value = true;
+  error.value = "";
+  try {
+    await refreshToken(token.id);
+    tokenMessage.value = `Token“${token.name}”已刷新`;
+    await refreshTokens();
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function revokeAccessToken(token: AccessToken) {
+  if (!window.confirm(`确认删除“${token.name}”吗？使用该 Token 的客户端下次启动或重连会失败。`)) return;
+  loading.value = true;
+  error.value = "";
+  try {
+    await deleteToken(token.id);
+    tokenMessage.value = `Token“${token.name}”已删除`;
+    await refreshTokens();
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function refreshTokens() {
+  const result = await getTokens();
+  tokens.value = result.tokens;
+}
+
+async function copyToken(token: string) {
+  try {
+    await navigator.clipboard.writeText(token);
+    tokenMessage.value = "Token 已复制";
+  } catch {
+    error.value = "复制失败，请手动选择 Token";
+  }
 }
 
 async function startSession() {
@@ -693,12 +788,17 @@ function streamLabel(status: typeof streamState.value) {
 
   <main v-else class="shell">
     <header class="topbar">
-      <div>
+      <div class="topbar-title">
+        <button v-if="activeDeviceId" class="icon-button compact" type="button" title="返回设备列表" @click="backToDevices">
+          <ArrowLeft :size="18" />
+        </button>
+        <div>
         <p class="eyebrow">Codex Remote</p>
-        <h1>本机控制台</h1>
+        <h1>{{ activeDevice ? `${activeDevice.name} 控制台` : "选择设备" }}</h1>
+        </div>
       </div>
       <div class="top-actions">
-        <button class="icon-button mobile-sidebar-toggle" type="button" title="打开对话列表" @click="sidebarOpen = true">
+        <button v-if="activeDeviceId" class="icon-button mobile-sidebar-toggle" type="button" title="打开对话列表" @click="sidebarOpen = true">
           <Menu :size="19" />
         </button>
         <button class="icon-button" type="button" title="刷新状态" @click="refresh">
@@ -713,25 +813,108 @@ function streamLabel(status: typeof streamState.value) {
     <p v-if="error" class="error">{{ error }}</p>
 
     <section v-if="passwordPanelOpen" class="password-panel">
-      <div>
+      <div class="account-heading">
         <strong>账号安全</strong>
         <p>当前账号：{{ auth.username || "已登录" }}</p>
       </div>
-      <form class="password-form" @submit.prevent="savePassword">
-        <input v-model="currentPassword" type="password" autocomplete="current-password" placeholder="当前密码" />
-        <input v-model="newPassword" type="password" autocomplete="new-password" placeholder="新密码，至少 8 个字符" />
-        <button class="primary icon-text" type="submit" :disabled="loading || !newPassword.trim()">
-          <KeyRound :size="18" />
-          <span>修改密码</span>
-        </button>
+      <div class="account-actions">
+        <form class="password-form" @submit.prevent="savePassword">
+          <input v-model="currentPassword" type="password" autocomplete="current-password" placeholder="当前密码" />
+          <input v-model="newPassword" type="password" autocomplete="new-password" placeholder="新密码，至少 8 个字符" />
+          <button class="primary icon-text" type="submit" :disabled="loading || !newPassword.trim()">
+            <KeyRound :size="18" />
+            <span>修改密码</span>
+          </button>
+        </form>
         <button class="icon-button sign-out" type="button" title="退出登录" @click="signOut">
           <X :size="18" />
         </button>
-      </form>
+      </div>
+      <div class="token-manager">
+        <div class="token-heading">
+          <div>
+            <strong>客户端 Token</strong>
+            <p>客户端使用 Token 登录并绑定到设备。Token 会保存到服务端数据库。</p>
+          </div>
+          <span>{{ tokens.length }} 个</span>
+        </div>
+        <form class="token-create" @submit.prevent="createAccessToken">
+          <input v-model="tokenName" type="text" placeholder="Token 名称，例如办公室电脑" />
+          <button class="primary icon-text" type="submit" :disabled="loading">
+            <Plus :size="18" />
+            <span>创建 Token</span>
+          </button>
+        </form>
+        <div v-if="tokens.length" class="token-list">
+          <article v-for="token in tokens" :key="token.id" class="token-card">
+            <div class="token-card-heading">
+              <strong>{{ token.name }}</strong>
+              <small>{{ token.prefix }}</small>
+            </div>
+            <div class="token-value-row">
+              <code>{{ token.token }}</code>
+              <button class="icon-button compact" type="button" title="复制 Token" @click="copyToken(token.token)">
+                <Copy :size="16" />
+              </button>
+            </div>
+            <p>创建于 {{ formatShortDate(token.createdAt) }}<span v-if="token.lastUsedAt">，最后使用于 {{ formatShortDate(token.lastUsedAt) }}</span></p>
+            <div class="token-card-actions">
+              <button class="icon-button icon-text" type="button" :disabled="loading" @click="rotateAccessToken(token)">
+                <RefreshCw :size="16" />
+                <span>刷新</span>
+              </button>
+              <button class="danger icon-text" type="button" :disabled="loading" @click="revokeAccessToken(token)">
+                <Trash2 :size="16" />
+                <span>删除</span>
+              </button>
+            </div>
+          </article>
+        </div>
+        <p v-else class="token-empty">还没有 Token，请先创建一个供客户端登录。</p>
+      </div>
       <small v-if="passwordMessage">{{ passwordMessage }}</small>
+      <small v-if="tokenMessage">{{ tokenMessage }}</small>
     </section>
 
-    <div class="workspace" :class="{ 'sidebar-open': sidebarOpen }">
+    <section v-if="!activeDeviceId" class="device-page">
+      <div class="device-page-heading">
+        <div>
+          <p class="eyebrow">Remote Devices</p>
+          <h2>选择要控制的电脑</h2>
+          <p>在线设备可以进入 Codex 控制台，离线设备需要先启动客户端。</p>
+        </div>
+        <button class="icon-button" type="button" title="刷新设备列表" @click="refresh">
+          <RefreshCw :size="19" />
+        </button>
+      </div>
+      <div v-if="devices.length" class="device-list">
+        <button
+          v-for="device in devices"
+          :key="device.id"
+          class="device-card"
+          :class="{ offline: !device.online }"
+          type="button"
+          :disabled="!device.online"
+          @click="selectDevice(device)"
+        >
+          <span class="device-icon"><Cpu :size="22" /></span>
+          <span class="device-card-main">
+            <strong>{{ device.name }}</strong>
+            <small>{{ device.online ? "在线，可进入控制台" : "离线，请先启动客户端" }}</small>
+            <small v-if="device.tokenName">Token：{{ device.tokenName }}（{{ device.tokenPrefix }}）</small>
+          </span>
+          <span class="device-status" :class="{ online: device.online }">{{ device.online ? "在线" : "离线" }}</span>
+          <ChevronRight :size="19" />
+        </button>
+      </div>
+      <div v-else class="device-empty">
+        <Cpu :size="30" />
+        <strong>还没有客户端设备</strong>
+        <p>先在安装 Codex 的电脑上使用 Token 登录并启动客户端。</p>
+      </div>
+    </section>
+
+    <div v-else class="workspace" :class="{ 'sidebar-open': sidebarOpen }">
       <button v-if="sidebarOpen" class="sidebar-backdrop" type="button" aria-label="关闭对话列表" @click="sidebarOpen = false" />
       <aside class="sidebar">
         <div class="sidebar-heading">
@@ -798,15 +981,10 @@ function streamLabel(status: typeof streamState.value) {
             <ShieldCheck :size="17" />
             <span>{{ streamLabel(streamState) }}</span>
           </div>
-          <label class="select-control device-select">
+          <div class="status-item current-device">
             <Cpu :size="16" />
-            <select v-model="activeDeviceId" @change="selectDevice">
-              <option value="" disabled>{{ devices.length ? "选择客户端" : "暂无客户端" }}</option>
-              <option v-for="device in devices" :key="device.id" :value="device.id" :disabled="!device.online">
-                {{ device.name }}{{ device.online ? "" : "（离线）" }}
-              </option>
-            </select>
-          </label>
+            <span>{{ activeDevice?.name || "当前设备" }}</span>
+          </div>
           <div class="segmented-control" aria-label="工作模式">
             <button type="button" :class="{ active: settings.workMode === 'edit' }" @click="saveSettings({ workMode: 'edit' })">编辑</button>
             <button type="button" :class="{ active: settings.workMode === 'plan' }" @click="saveSettings({ workMode: 'plan' })">计划</button>
