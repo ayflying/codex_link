@@ -4,8 +4,8 @@ services:
     environment:
       MYSQL_DATABASE: codex_link
       MYSQL_USER: codex_link
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请在 .env 中设置 MYSQL_PASSWORD}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 中设置 MYSQL_ROOT_PASSWORD}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-codex_link_default_password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-codex_link_default_root_password}
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
@@ -26,7 +26,7 @@ services:
       DB_PORT: "3306"
       DB_NAME: codex_link
       DB_USER: codex_link
-      DB_PASSWORD: ${MYSQL_PASSWORD:?请在 .env 中设置 MYSQL_PASSWORD}
+      DB_PASSWORD: ${MYSQL_PASSWORD:-codex_link_default_password}
       UPLOAD_DIR: /data/uploads
       WEB_DIR: /app/web
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
