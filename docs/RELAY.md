@@ -55,16 +55,20 @@ docker compose up -d --pull always
 
 relay 自带一个 STUN-only UDP 监听器，默认容器端口为 `3478`，Compose 默认映射为宿主机 UDP `3478`。它只响应 STUN Binding 请求，返回请求方的公网映射地址，不接收、转发或中继 WebRTC DataChannel 数据，因此这个端口不会产生 TURN 中转流量。公网防火墙需要同时放行网页 TCP 端口和该 UDP 端口。
 
-可以在 `.env` 中手动设置映射端口和公网地址：
+以下是 relay 的公开编排配置，不需要放入 `.env`。需要修改 STUN 地址、端口映射、公网地址或 P2P-only 策略时，直接编辑 `docker-compose.yml` 中 relay 的 `environment` 和 `ports`：
 
-```env
-WEBRTC_STUN_PORT=3478
-WEBRTC_STUN_PUBLIC_PORT=3478
-WEBRTC_STUN_PUBLIC_HOST=relay.example.com
-WEBRTC_P2P_ONLY=false
+```yaml
+environment:
+  WEBRTC_STUN_SERVERS: "stun:stun.l.google.com:19302"
+  WEBRTC_STUN_PORT: "3478"
+  WEBRTC_STUN_PUBLIC_PORT: "3478"
+  WEBRTC_STUN_PUBLIC_HOST: ""
+  WEBRTC_P2P_ONLY: "false"
+ports:
+  - "3478:3478/udp"
 ```
 
-`WEBRTC_STUN_PUBLIC_PORT` 是宿主机映射端口，`WEBRTC_STUN_PORT` 是容器内监听端口；两者不同时 Compose 会按这两个值生成 UDP 映射。`WEBRTC_STUN_PUBLIC_HOST` 留空时，relay 会从网页请求的 Host 自动生成候选地址。也可以用 `WEBRTC_STUN_SERVERS` 配置逗号分隔的外部 STUN 地址，relay 会将内置 STUN 地址和外部地址一起下发给浏览器，浏览器再把同一组地址放入 offer，agent 不需要另行同步环境变量。
+`WEBRTC_STUN_PUBLIC_PORT` 是宿主机映射端口，`WEBRTC_STUN_PORT` 是容器内监听端口；修改端口时需要同步修改这两个 environment 值和 `ports` 中的 UDP 映射。`WEBRTC_STUN_PUBLIC_HOST` 留空时，relay 会从网页请求的 Host 自动生成候选地址。也可以用 `WEBRTC_STUN_SERVERS` 配置逗号分隔的外部 STUN 地址，relay 会将内置 STUN 地址和外部地址一起下发给浏览器，浏览器再把同一组地址放入 offer，agent 不需要另行同步环境变量。
 
 默认 `WEBRTC_P2P_ONLY=false`，打洞失败时仍兼容服务端 HTTP/SSE/WebSocket 回退。设置为 `true` 后，业务请求、事件流、图片上传以及 agent 的事件/会话通知在 P2P 未建立或中断时直接失败或丢弃，绝不回退到服务端中转；网页登录、设备发现和 P2P 信令仍需要通过 relay 完成。项目没有配置 TURN，无法打洞的网络在该模式下不可用。
 
