@@ -382,6 +382,7 @@ func (b *Bridge) startProcess() error {
 	cmd := exec.Command(b.codexBin, "app-server")
 	cmd.Dir = b.cwd
 	cmd.Env = os.Environ()
+	hideConsoleWindow(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		b.mu.Unlock()
