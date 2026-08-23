@@ -51,6 +51,7 @@ type clientGUI struct {
 	config   remoteAgentConfig
 	process  *exec.Cmd
 	pollStop chan struct{}
+	starting bool
 	quitting bool
 
 	trayMu           sync.Mutex
@@ -73,6 +74,16 @@ type guiConnectResult struct {
 }
 
 func runClientGUI(root, cwd, dataDir string) error {
+	releaseInstance, err := acquireInstance("gui", dataDir)
+	if err != nil {
+		if errors.Is(err, errInstanceAlreadyRunning) {
+			win.MessageBox(0, syscall.StringToUTF16Ptr("客户端已经启动，请在系统托盘中打开已有窗口。"), syscall.StringToUTF16Ptr("Codex Link"), win.MB_ICONINFORMATION|win.MB_OK)
+			return nil
+		}
+		return err
+	}
+	defer releaseInstance()
+
 	config, _ := loadRemoteAgentConfig(dataDir)
 	instance := win.GetModuleHandle(nil)
 	icon, ownsIcon := createClientIcon()
@@ -366,11 +377,18 @@ func insertTrayMenuItem(menu win.HMENU, id uint32, text string) {
 }
 
 func (g *clientGUI) connect() {
-	if g.isRunning() {
+	g.mu.Lock()
+	running := g.process != nil
+	starting := g.starting
+	g.mu.Unlock()
+	if running {
 		g.stopAgent()
 		setWindowText(g.statusLabel, "客户端已停止")
 		setWindowText(g.detailLabel, "后台客户端已停止。")
 		g.updateConnectButton()
+		return
+	}
+	if starting {
 		return
 	}
 
@@ -381,6 +399,13 @@ func (g *clientGUI) connect() {
 		g.showError("请填写服务端地址和 Token。")
 		return
 	}
+	g.mu.Lock()
+	if g.quitting || g.process != nil || g.starting {
+		g.mu.Unlock()
+		return
+	}
+	g.starting = true
+	g.mu.Unlock()
 
 	g.setBusy(true)
 	setWindowText(g.statusLabel, "正在登录")
@@ -509,6 +534,7 @@ func (g *clientGUI) handleConnectResult() {
 	g.mu.Lock()
 	result := g.connectResult
 	g.connectResult = nil
+	g.starting = false
 	g.mu.Unlock()
 	if result == nil || g.isQuitting() {
 		return

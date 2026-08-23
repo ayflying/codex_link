@@ -145,6 +145,16 @@ func loginDeviceID(dataDir, serverURL string) string {
 }
 
 func runRemoteAgent(root, cwd, dataDir string) {
+	releaseInstance, err := acquireInstance("agent", dataDir)
+	if err != nil {
+		if errors.Is(err, errInstanceAlreadyRunning) {
+			log.Printf("后台客户端已经启动，不能重复运行。")
+			return
+		}
+		log.Fatalf("获取后台客户端启动锁失败: %v", err)
+	}
+	defer releaseInstance()
+
 	config, err := loadRemoteAgentConfig(dataDir)
 	if err != nil {
 		log.Fatal("客户端尚未使用 Token 登录。请先运行: codex-remote-agent login --server <服务端地址> --token <Token>")
