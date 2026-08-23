@@ -31,6 +31,7 @@ const (
 	wmConnectResult   = win.WM_APP + 2
 	wmAgentExited     = win.WM_APP + 3
 	wmPollState       = win.WM_APP + 4
+	wmTrayError       = win.WM_APP + 5
 )
 
 type clientGUI struct {
@@ -52,10 +53,14 @@ type clientGUI struct {
 	pollStop chan struct{}
 	quitting bool
 
-	tray      win.NOTIFYICONDATA
-	trayReady bool
-	icon      win.HICON
-	ownsIcon  bool
+	trayMu           sync.Mutex
+	tray             win.NOTIFYICONDATA
+	trayReady        bool
+	trayInitializing bool
+	trayInitDone     chan struct{}
+	trayError        string
+	icon             win.HICON
+	ownsIcon         bool
 
 	connectResult *guiConnectResult
 	agentExitErr  string
@@ -108,12 +113,9 @@ func runClientGUI(root, cwd, dataDir string) error {
 		return fmt.Errorf("创建客户端窗口失败: %v", win.GetLastError())
 	}
 
-	if err := gui.createTray(); err != nil {
-		win.DestroyWindow(hwnd)
-		return err
-	}
 	win.ShowWindow(hwnd, win.SW_SHOWNORMAL)
 	win.UpdateWindow(hwnd)
+	gui.startTrayInitialization()
 
 	var message win.MSG
 	for win.GetMessage(&message, 0, 0, 0) > 0 {
@@ -149,6 +151,8 @@ func clientWindowProc(hwnd win.HWND, message uint32, wParam, lParam uintptr) uin
 		gui.handleAgentExited()
 	case wmPollState:
 		gui.handlePollState()
+	case wmTrayError:
+		gui.handleTrayError()
 	case win.WM_CLOSE:
 		if gui.isQuitting() {
 			win.DestroyWindow(hwnd)
@@ -209,40 +213,90 @@ func (g *clientGUI) createControls() {
 	add("BUTTON", "隐藏到托盘", win.BS_PUSHBUTTON|win.WS_TABSTOP, 0, controlHide, 430, 320, 100, 30)
 }
 
-func (g *clientGUI) createTray() error {
-	g.tray = win.NOTIFYICONDATA{
+func (g *clientGUI) startTrayInitialization() {
+	g.trayMu.Lock()
+	if g.trayInitializing || g.trayReady {
+		g.trayMu.Unlock()
+		return
+	}
+	g.trayInitializing = true
+	g.trayError = ""
+	g.trayInitDone = make(chan struct{})
+	icon := g.icon
+	g.trayMu.Unlock()
+	go g.initializeTray(icon)
+}
+
+func (g *clientGUI) initializeTray(icon win.HICON) {
+	tray := win.NOTIFYICONDATA{
 		CbSize:           uint32(unsafe.Sizeof(win.NOTIFYICONDATA{})),
 		HWnd:             g.hwnd,
 		UID:              1,
 		UFlags:           win.NIF_MESSAGE | win.NIF_ICON | win.NIF_TIP,
 		UCallbackMessage: wmTray,
-		HIcon:            g.icon,
+		HIcon:            icon,
 	}
-	copy(g.tray.SzTip[:], syscall.StringToUTF16("Codex Link 客户端"))
-	if !win.Shell_NotifyIcon(win.NIM_ADD, &g.tray) {
-		return fmt.Errorf("创建系统托盘图标失败: %v", win.GetLastError())
+	copy(tray.SzTip[:], syscall.StringToUTF16("Codex Link 客户端"))
+	added := win.Shell_NotifyIcon(win.NIM_ADD, &tray)
+	if added {
+		tray.UVersion = win.NOTIFYICON_VERSION
+		win.Shell_NotifyIcon(win.NIM_SETVERSION, &tray)
 	}
-	g.tray.UVersion = win.NOTIFYICON_VERSION
-	win.Shell_NotifyIcon(win.NIM_SETVERSION, &g.tray)
-	g.trayReady = true
-	return nil
+	quitting := g.isQuitting()
+	g.trayMu.Lock()
+	done := g.trayInitDone
+	g.trayInitializing = false
+	if added && !quitting {
+		g.tray = tray
+		g.trayReady = true
+	} else if !added && !quitting {
+		g.trayError = fmt.Sprintf("创建系统托盘图标失败: %v", win.GetLastError())
+	}
+	if done != nil {
+		close(done)
+		g.trayInitDone = nil
+	}
+	g.trayMu.Unlock()
+	if added && quitting {
+		win.Shell_NotifyIcon(win.NIM_DELETE, &tray)
+	}
+	if !added && !quitting {
+		win.PostMessage(g.hwnd, wmTrayError, 0, 0)
+	}
 }
 
 func (g *clientGUI) removeTray() {
-	if !g.trayReady {
-		return
-	}
-	win.Shell_NotifyIcon(win.NIM_DELETE, &g.tray)
+	g.trayMu.Lock()
+	tray := g.tray
+	ready := g.trayReady
 	g.trayReady = false
+	g.trayMu.Unlock()
+	if ready {
+		win.Shell_NotifyIcon(win.NIM_DELETE, &tray)
+	}
 }
 
 func (g *clientGUI) releaseIcon() {
-	if !g.ownsIcon || g.icon == 0 {
-		return
-	}
-	win.DestroyIcon(g.icon)
+	g.trayMu.Lock()
+	icon := g.icon
+	ownsIcon := g.ownsIcon
+	done := g.trayInitDone
+	initializing := g.trayInitializing
 	g.icon = 0
 	g.ownsIcon = false
+	g.trayMu.Unlock()
+	if !ownsIcon || icon == 0 {
+		return
+	}
+	destroy := func() { win.DestroyIcon(icon) }
+	if initializing && done != nil {
+		go func() {
+			<-done
+			destroy()
+		}()
+		return
+	}
+	destroy()
 }
 
 func (g *clientGUI) handleCommand(id uint16) {
@@ -507,6 +561,18 @@ func (g *clientGUI) handlePollState() {
 		setWindowText(g.statusLabel, "等待服务端")
 		setWindowText(g.detailLabel, "服务端暂时不可用，客户端会自动重试。")
 	}
+}
+
+func (g *clientGUI) handleTrayError() {
+	g.trayMu.Lock()
+	detail := g.trayError
+	g.trayError = ""
+	g.trayMu.Unlock()
+	if detail == "" || g.isQuitting() {
+		return
+	}
+	setWindowText(g.statusLabel, "托盘不可用")
+	setWindowText(g.detailLabel, detail+" 客户端仍可正常使用，请稍后重试。")
 }
 
 func (g *clientGUI) stopAgent() {
