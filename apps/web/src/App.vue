@@ -80,6 +80,7 @@ const activeDeviceId = ref("");
 const health = ref<unknown>(null);
 const error = ref("");
 const loading = ref(false);
+const openingThreadId = ref("");
 const eventSource = ref<EventSource | null>(null);
 const streamState = ref<"idle" | "connected" | "reconnecting">("idle");
 const transportState = ref<"idle" | "connecting" | "p2p" | "relay" | "failed">("idle");
@@ -449,7 +450,8 @@ async function startSession() {
 }
 
 async function openThread(session: SessionRecord) {
-  if (session.id === activeSessionId.value) return;
+  if (session.id === activeSessionId.value || loading.value || openingThreadId.value) return;
+  openingThreadId.value = session.id;
   loading.value = true;
   error.value = "";
   try {
@@ -467,6 +469,7 @@ async function openThread(session: SessionRecord) {
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : String(reason);
   } finally {
+    openingThreadId.value = "";
     loading.value = false;
   }
 }
@@ -1231,7 +1234,7 @@ function transportLabel(status: typeof transportState.value) {
               class="session-pill"
               :class="{ active: session.id === activeSessionId }"
             >
-              <button class="session-open" type="button" @click="openThread(session)">
+              <button class="session-open" type="button" :disabled="loading" @click="openThread(session)">
                 <span class="session-title">{{ session.title }}</span>
                 <span class="session-columns">
                   <small>项目：{{ projectLabel(session.cwd || "") }}</small>

@@ -1263,7 +1263,6 @@ func (s *relayServer) threadAction(w http.ResponseWriter, request *http.Request)
 		return
 	}
 	if len(parts) == 2 && parts[1] == "resume" && request.Method == http.MethodPost {
-		s.store.clearEvents(user.ID, threadID)
 		result, err := s.command(user.ID, deviceID, "threads.resume", map[string]string{"id": threadID})
 		if err != nil {
 			writeErrorStatus(w, http.StatusBadGateway, err.Error())

@@ -240,6 +240,8 @@ type pendingCall struct {
 
 type Bridge struct {
 	mu              sync.Mutex
+	rpcMu           sync.Mutex
+	resumeMu        sync.Mutex
 	cmd             *exec.Cmd
 	stdin           io.WriteCloser
 	nextRPCID       int64
@@ -392,6 +394,8 @@ func (b *Bridge) readStderr(reader io.Reader) {
 }
 
 func (b *Bridge) request(method string, params interface{}) (interface{}, error) {
+	b.rpcMu.Lock()
+	defer b.rpcMu.Unlock()
 	b.mu.Lock()
 	b.nextRPCID++
 	id := b.nextRPCID
@@ -514,9 +518,18 @@ func (b *Bridge) ListThreads() ([]Session, error) {
 }
 
 func (b *Bridge) ResumeThread(threadID string) (Session, error) {
+	b.resumeMu.Lock()
+	defer b.resumeMu.Unlock()
 	if err := b.ensureReady(); err != nil {
 		return Session{}, err
 	}
+	b.mu.Lock()
+	if b.session != nil && b.codexThreadID == threadID {
+		session := *b.session
+		b.mu.Unlock()
+		return session, nil
+	}
+	b.mu.Unlock()
 	settings := b.store.Settings()
 	result, err := b.request("thread/resume", withRuntimeOptions(map[string]interface{}{
 		"threadId":              threadID,
@@ -531,6 +544,7 @@ func (b *Bridge) ResumeThread(threadID string) (Session, error) {
 	b.codexThreadID = session.ID
 	b.session = &session
 	b.mu.Unlock()
+	b.store.ClearEvents(session.ID)
 	b.emit("session.status", map[string]interface{}{"status": session.Status, "mode": session.Mode})
 	b.hydrateThread(thread)
 	return session, nil

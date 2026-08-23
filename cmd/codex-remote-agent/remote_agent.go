@@ -301,7 +301,6 @@ func (a *remoteAgent) executeCommand(action string, payload json.RawMessage) (in
 		if body.ID == "" {
 			return nil, errors.New("缺少对话 ID")
 		}
-		a.store.ClearEvents(body.ID)
 		session, err := a.bridge.ResumeThread(body.ID)
 		if err != nil {
 			return nil, err

@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"os/exec"
+	"testing"
+)
 
 func TestLoginDeviceIDReusesConfigForSameServer(t *testing.T) {
 	dataDir := t.TempDir()
@@ -29,5 +32,29 @@ func TestLoginDeviceIDCreatesNewIdentityForDifferentServer(t *testing.T) {
 	}
 	if got := loginDeviceID(dataDir, "https://other-relay.example"); got != "" {
 		t.Fatalf("expected no reused device ID, got %q", got)
+	}
+}
+
+func TestResumeThreadReusesAttachedThreadAndKeepsEvents(t *testing.T) {
+	store := NewStore(t.TempDir())
+	threadID := "thread-existing"
+	store.Append(Event{SessionID: threadID, Type: "assistant.delta", Payload: map[string]interface{}{"text": "保留"}})
+
+	bridge := &Bridge{
+		cmd:           &exec.Cmd{},
+		initialized:   true,
+		codexThreadID: threadID,
+		session:       &Session{ID: threadID, Title: "已有会话", Status: "idle"},
+		store:         store,
+	}
+	got, err := bridge.ResumeThread(threadID)
+	if err != nil {
+		t.Fatalf("resume existing thread: %v", err)
+	}
+	if got.ID != threadID {
+		t.Fatalf("expected thread %q, got %q", threadID, got.ID)
+	}
+	if events := store.Events(threadID, 0, 10); len(events) != 1 || events[0].Payload["text"] != "保留" {
+		t.Fatalf("existing events were not preserved: %#v", events)
 	}
 }
