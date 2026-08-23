@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronRight,
   CircleStop,
+  CircleAlert,
   Copy,
   Cpu,
   Gauge,
@@ -82,6 +83,7 @@ const passwordMessage = ref("");
 const tokens = ref<AccessToken[]>([]);
 const tokenName = ref("");
 const tokenMessage = ref("");
+const noticeMessage = ref("");
 const sessions = ref<SessionRecord[]>([]);
 const activeSessionId = ref("");
 const events = ref<RemoteEvent[]>([]);
@@ -319,6 +321,10 @@ function closeModal() {
   modalView.value = null;
 }
 
+function closeNotice() {
+  noticeMessage.value = "";
+}
+
 async function openSystemManagement() {
   userMenuOpen.value = false;
   modalView.value = null;
@@ -507,12 +513,45 @@ async function commandWithFallback<T>(action: string, payload: unknown, fallback
   }
 }
 
-async function copyToken(token: string) {
+async function copyText(text: string) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // HTTP and restricted browser contexts can reject the modern clipboard API.
+    }
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.top = "0";
+  textarea.style.left = "-9999px";
+  textarea.style.opacity = "0";
+  let copied = false;
   try {
-    await navigator.clipboard.writeText(token);
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    textarea.setSelectionRange(0, text.length);
+    copied = document.execCommand("copy");
+  } finally {
+    textarea.remove();
+  }
+  if (!copied) throw new Error("clipboard unavailable");
+}
+
+async function copyToken(token: string) {
+  error.value = "";
+  tokenMessage.value = "";
+  noticeMessage.value = "";
+  try {
+    await copyText(token);
     tokenMessage.value = "Token 已复制";
   } catch {
-    error.value = "复制失败，请手动选择 Token";
+    noticeMessage.value = "复制失败，请检查浏览器剪贴板权限，或直接选中 Token 文本后复制。";
   }
 }
 
@@ -1209,6 +1248,29 @@ function transportLabel(status: typeof transportState.value) {
     </header>
 
     <p v-if="error" class="error">{{ error }}</p>
+
+    <div v-if="noticeMessage" class="modal-backdrop notice-backdrop" role="presentation" @click.self="closeNotice">
+      <section class="modal notice-modal" role="alertdialog" aria-modal="true" aria-labelledby="notice-title" aria-describedby="notice-message">
+        <header class="modal-header">
+          <div>
+            <p class="eyebrow">操作提示</p>
+            <h2 id="notice-title">复制失败</h2>
+          </div>
+          <button class="icon-button compact" type="button" title="关闭提示" @click="closeNotice">
+            <X :size="17" />
+          </button>
+        </header>
+        <div class="notice-body">
+          <div class="notice-message">
+            <span class="notice-icon"><CircleAlert :size="20" /></span>
+            <p id="notice-message">{{ noticeMessage }}</p>
+          </div>
+          <div class="notice-actions">
+            <button class="primary" type="button" @click="closeNotice">知道了</button>
+          </div>
+        </div>
+      </section>
+    </div>
 
     <div v-if="modalView" class="modal-backdrop" role="presentation" @click.self="closeModal">
       <section class="modal" role="dialog" aria-modal="true" :aria-labelledby="`${modalView}-modal-title`">
