@@ -151,7 +151,7 @@ codex-remote-agent.exe login `
 GET /api/p2p/ws?deviceId=<设备 ID>&clientId=<本次网页连接 ID>
 ```
 
-该 WebSocket 只转发 `p2p.signal` 消息中的 SDP offer/answer 和 ICE candidate，不承载会话内容或图片。建立 DataChannel 后，浏览器使用与 agent WebSocket 相同的 `command`、`response`、`event` 和 `session` envelope；服务端中转仍保留为自动回退路径。
+该 WebSocket 只转发 `p2p.signal` 消息中的 SDP offer/answer 和 ICE candidate，不承载会话内容或图片。`connected` 消息的 payload 包含 `iceServers` 和 `p2pOnly`；浏览器会将 `iceServers` 放入 offer，agent 使用 offer 中的同一组 STUN 地址。建立 DataChannel 后，浏览器使用与 agent WebSocket 相同的 `command`、`response`、`event` 和 `session` envelope。`p2pOnly=true` 时，P2P 失败不会回退到服务端中转。
 
 ## 设备和会话
 
@@ -165,7 +165,7 @@ GET /api/p2p/ws?deviceId=<设备 ID>&clientId=<本次网页连接 ID>
 
 ### GET `/api/health`
 
-返回服务端模式、MySQL 状态、当前账号的在线设备数量和设备列表。该接口仍受认证保护。
+返回服务端模式、MySQL 状态、当前数据库迁移版本、当前账号的在线设备数量和设备列表。该接口仍受认证保护。
 
 ### GET `/api/threads`
 

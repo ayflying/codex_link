@@ -45,13 +45,48 @@ ALLOW_REGISTRATION=false
 docker compose up -d --pull always
 ```
 
+## 版本与镜像标签
+
+仓库根目录的 `VERSION` 保存三段式版本号，初始基线为 `0.2.3`。本地首次使用时执行：
+
+```powershell
+.\scripts\install-git-hooks.ps1
+```
+
+Git hook 会在每次提交前自动递增修订号，例如 `0.2.3` 到 `0.2.4`；提交完成后还会自动在配置的远程构建服务器上构建并推送版本标签和 `latest` 标签：
+
+```powershell
+.\scripts\publish-relay.ps1
+```
+
+脚本使用通过 `-Remote` 或 `CODEX_LINK_BUILD_SERVER` 指定的远程构建服务器，并复用该服务器上的 Docker/GHCR 登录状态；如需临时登录，可通过 `CODEX_LINK_GHCR_TOKEN` 传入，但不要将 Token 写入仓库。Compose 默认使用 `latest`；需要回滚或跳转版本时，把镜像改为 `ghcr.io/ayflying/codex_link:0.2.3` 等具体标签后重新部署。设置 `CODEX_LINK_SKIP_IMAGE_PUBLISH=1` 可跳过某次自动发布。
+
 账号、Token、设备、会话和事件保存在 MySQL volume `mysql_data`，服务端中转的图片文件保存在 Docker volume `data`。P2P 模式下图片直接写入 agent 的本地 `data-remote-agent/uploads`，不会经过 relay。新数据库从空数据开始，不会导入旧的 `relay-store.json`。服务端不保存本机 Codex/CCS/API Key。
 
-## P2P 与回退
+服务端启动时会自动执行 `cmd/codex-relay-server/migrations` 下的数据库迁移。迁移文件使用 `001_init.sql`、`002_add_xxx.sql` 这样的递增版本号；已执行版本会记录在 MySQL 的 `schema_migrations` 表中，空数据库会自动建表，已有旧数据库会自动补齐当前版本。已执行迁移的名称或内容被修改时，服务端会拒绝启动，应该新增更高版本的迁移文件修正 schema。当前版本也会通过认证后的 `/api/health` 返回 `schemaVersion`。
+
+## P2P、STUN 与回退
 
 网页选择在线设备后，会通过已登录网页会话连接 `/api/p2p/ws`，relay 只转发 SDP/ICE 信令。浏览器和 agent 建立 WebRTC DataChannel 后，线程、会话命令、事件和图片分块上传都走直连；页面状态栏显示“P2P 直连”。如果浏览器不支持 WebRTC、UDP 打洞失败、STUN 不可达或 DataChannel 中断，页面状态会显示“服务端中转”，自动恢复原来的 HTTP/SSE/WebSocket 路径。
 
-默认 STUN 是 `stun:stun.l.google.com:19302`。可在 relay 环境中用 `WEBRTC_STUN_SERVERS` 配置逗号分隔的 STUN 地址；运行 agent 的电脑也应设置同样的值。项目没有配置 TURN，无法打洞的网络会依赖服务端回退。
+relay 自带一个 STUN-only UDP 监听器，容器端口为 `8787`，Compose 将它映射到宿主机 UDP `18787`，与网页 TCP `18787` 共用端口号。TCP 和 UDP 使用独立的端口空间，二者不会冲突。它只响应 STUN Binding 请求，返回请求方的公网映射地址，不接收、转发或中继 WebRTC DataChannel 数据，因此这个端口不会产生 TURN 中转流量。公网防火墙需要同时放行 `18787/tcp` 和 `18787/udp`。
+
+以下是 relay 的公开编排配置，不需要放入 `.env`。需要修改 STUN 地址、端口映射、公网地址或 P2P-only 策略时，直接编辑 `docker-compose.yml` 中 relay 的 `environment` 和 `ports`：
+
+```yaml
+environment:
+  WEBRTC_STUN_PORT: "8787"
+  WEBRTC_STUN_PUBLIC_PORT: "18787"
+  WEBRTC_STUN_PUBLIC_HOST: ""
+  WEBRTC_P2P_ONLY: "false"
+ports:
+  - "18787:8787/tcp"
+  - "18787:8787/udp"
+```
+
+`WEBRTC_STUN_PUBLIC_PORT` 是宿主机 UDP 映射端口，`WEBRTC_STUN_PORT` 是容器内监听端口；当前容器内 TCP 网页服务和 UDP STUN 都使用 `8787`，宿主机也都使用 `18787`。如果修改宿主机端口，需要同步修改 `WEBRTC_STUN_PUBLIC_PORT` 和 `ports` 中的 TCP/UDP 映射；两条映射不能合并，否则未标注协议的映射只会发布 TCP。`WEBRTC_STUN_PUBLIC_HOST` 留空时，relay 会从网页请求的 Host 自动生成候选地址。当前默认只使用 relay 自己的 STUN-only 服务；只有明确通过环境变量 `WEBRTC_STUN_SERVERS` 增加地址时，才会额外使用外部 STUN 服务。
+
+默认 `WEBRTC_P2P_ONLY=false`，打洞失败时仍兼容服务端 HTTP/SSE/WebSocket 回退。设置为 `true` 后，业务请求、事件流、图片上传以及 agent 的事件/会话通知在 P2P 未建立或中断时直接失败或丢弃，绝不回退到服务端中转；网页登录、设备发现和 P2P 信令仍需要通过 relay 完成。项目没有配置 TURN，无法打洞的网络在该模式下不可用。
 
 ## 构建客户端
 
