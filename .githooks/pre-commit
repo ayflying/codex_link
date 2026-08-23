@@ -3,7 +3,7 @@ set -eu
 
 root=$(git rev-parse --show-toplevel)
 version_file="$root/VERSION"
-version=$(tr -d '[:space:]' < "$version_file")
+IFS= read -r version < "$version_file"
 
 major=${version%%.*}
 rest=${version#*.}
