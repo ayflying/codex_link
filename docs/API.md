@@ -171,6 +171,10 @@ GET /api/p2p/ws?deviceId=<设备 ID>&clientId=<本次网页连接 ID>
 
 从选中的在线客户端读取 Codex 历史对话并同步会话元数据。可使用 `?deviceId=<设备 ID>` 指定设备；网页控制台在 P2P 直连时会改用 DataChannel 的 `threads.list` 命令。
 
+### GET `/api/models`
+
+读取在线客户端通过 Codex app-server 暴露的可用模型目录。网页控制台在 P2P 直连时会改用 DataChannel 的 `models.list` 命令；模型选择会保存到客户端设置，并作用于新会话和后续消息。
+
 ### GET `/api/sessions`
 
 读取服务端缓存的会话元数据，按 `updated_at` 倒序返回。可使用 `?deviceId=<设备 ID>` 筛选。
@@ -205,7 +209,7 @@ GET /api/sessions/<session-id>/events?after=120
 
 服务端最多回放 `EVENT_BACKLOG_LIMIT` 条事件，默认 120 条；实时事件仍通过进程内广播发送。事件类型包括：
 
-`session.status`、`user.message`、`assistant.delta`、`tool.started`、`tool.output`、`approval.requested`、`approval.resolved`、`turn.done`、`error`。
+`session.status`、`user.message`、`assistant.delta`、`tool.started`、`tool.output`、`approval.requested`、`approval.resolved`、`turn.done`、`context.usage`、`error`。
 
 ### POST `/api/sessions/:id/messages`
 

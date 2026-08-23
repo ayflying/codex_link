@@ -283,6 +283,12 @@ func (a *remoteAgent) executeCommand(action string, payload json.RawMessage) (in
 			a.store.UpsertSession(session)
 		}
 		return map[string]interface{}{"sessions": sessions}, nil
+	case "models.list":
+		models, err := a.bridge.ListModels()
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"models": models}, nil
 	case "sessions.create":
 		var body struct {
 			Prompt string `json:"prompt"`

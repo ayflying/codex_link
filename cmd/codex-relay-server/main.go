@@ -32,14 +32,39 @@ const (
 )
 
 type Session struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Mode      string `json:"mode"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"createdAt"`
-	UpdatedAt string `json:"updatedAt"`
-	Cwd       string `json:"cwd,omitempty"`
-	Note      string `json:"note,omitempty"`
+	ID         string      `json:"id"`
+	Title      string      `json:"title"`
+	Mode       string      `json:"mode"`
+	Status     string      `json:"status"`
+	CreatedAt  string      `json:"createdAt"`
+	UpdatedAt  string      `json:"updatedAt"`
+	Cwd        string      `json:"cwd,omitempty"`
+	Note       string      `json:"note,omitempty"`
+	Model      string      `json:"model,omitempty"`
+	TokenUsage *TokenUsage `json:"tokenUsage,omitempty"`
+}
+
+type TokenUsageBreakdown struct {
+	CachedInputTokens     int64 `json:"cachedInputTokens"`
+	InputTokens           int64 `json:"inputTokens"`
+	OutputTokens          int64 `json:"outputTokens"`
+	ReasoningOutputTokens int64 `json:"reasoningOutputTokens"`
+	TotalTokens           int64 `json:"totalTokens"`
+}
+
+type TokenUsage struct {
+	Last               TokenUsageBreakdown `json:"last"`
+	Total              TokenUsageBreakdown `json:"total"`
+	ModelContextWindow *int64              `json:"modelContextWindow,omitempty"`
+}
+
+type ModelOption struct {
+	ID          string `json:"id"`
+	Model       string `json:"model"`
+	DisplayName string `json:"displayName"`
+	Description string `json:"description"`
+	IsDefault   bool   `json:"isDefault"`
+	Hidden      bool   `json:"hidden"`
 }
 
 type Event struct {
@@ -62,6 +87,7 @@ type Attachment struct {
 type AppSettings struct {
 	ApprovalMode string `json:"approvalMode"`
 	WorkMode     string `json:"workMode"`
+	Model        string `json:"model"`
 }
 
 type envelope struct {
@@ -674,6 +700,7 @@ func main() {
 	mux.HandleFunc("/api/devices", server.devices)
 	mux.HandleFunc("/api/devices/", server.deviceItem)
 	mux.HandleFunc("/api/settings", server.settings)
+	mux.HandleFunc("/api/models", server.models)
 	mux.HandleFunc("/api/uploads", server.uploads)
 	mux.HandleFunc("/api/uploads/", server.uploadFile)
 	mux.HandleFunc("/api/threads", server.threads)
@@ -1249,6 +1276,25 @@ func (s *relayServer) threads(w http.ResponseWriter, request *http.Request) {
 	writeRawJSON(w, result)
 }
 
+func (s *relayServer) models(w http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	user, _ := s.userFromRequest(request)
+	deviceID, err := s.resolveDevice(user.ID, request, "")
+	if err != nil {
+		writeErrorStatus(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	result, err := s.command(user.ID, deviceID, "models.list", nil)
+	if err != nil {
+		writeErrorStatus(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeRawJSON(w, result)
+}
+
 func (s *relayServer) threadAction(w http.ResponseWriter, request *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(request.URL.Path, "/api/threads/"), "/")
 	if len(parts) == 0 || parts[0] == "" {
@@ -1655,6 +1701,7 @@ func (s *relayServer) openapi(w http.ResponseWriter, request *http.Request) {
 			"/api/devices":                  map[string]interface{}{"get": map[string]string{"summary": "设备列表及在线状态"}},
 			"/api/devices/{id}":             map[string]interface{}{"delete": map[string]string{"summary": "删除离线设备"}},
 			"/api/threads":                  map[string]interface{}{"get": map[string]string{"summary": "从在线客户端读取历史对话"}},
+			"/api/models":                   map[string]interface{}{"get": map[string]string{"summary": "读取在线客户端可用模型"}},
 			"/api/threads/{id}":             map[string]interface{}{"delete": map[string]string{"summary": "归档 Codex 对话"}},
 			"/api/threads/{id}/resume":      map[string]interface{}{"post": map[string]string{"summary": "恢复 Codex 对话"}},
 			"/api/sessions":                 map[string]interface{}{"get": map[string]string{"summary": "读取同步会话缓存"}, "post": map[string]string{"summary": "创建新会话"}},

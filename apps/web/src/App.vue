@@ -8,6 +8,7 @@ import {
   CircleStop,
   Copy,
   Cpu,
+  Gauge,
   ImagePlus,
   KeyRound,
   Menu,
@@ -33,6 +34,7 @@ import {
   getAuthStatus,
   getDevices,
   getHealth,
+  getModels,
   getSettings,
   getThreads,
   getTokens,
@@ -49,9 +51,11 @@ import {
   type Attachment,
   type AccessToken,
   type AuthStatus,
+  type ModelOption,
   type RemoteDevice,
   type RemoteEvent,
-  type SessionRecord
+  type SessionRecord,
+  type TokenUsage
 } from "./api";
 import { P2PRemoteError, P2PTransport } from "./p2p";
 
@@ -74,7 +78,8 @@ const events = ref<RemoteEvent[]>([]);
 const draft = ref("");
 const firstPrompt = ref("");
 const attachments = ref<Attachment[]>([]);
-const settings = ref<AppSettings>({ approvalMode: "on-request", workMode: "edit" });
+const settings = ref<AppSettings>({ approvalMode: "on-request", workMode: "edit", model: "" });
+const models = ref<ModelOption[]>([]);
 const devices = ref<RemoteDevice[]>([]);
 const activeDeviceId = ref("");
 const health = ref<unknown>(null);
@@ -141,6 +146,7 @@ const displayEvents = computed(() => {
       if (event.type === "session.status") return false;
       if (event.type === "approval.resolved") return false;
       if (event.type === "turn.done") return false;
+      if (event.type === "context.usage") return false;
       if (event.type === "assistant.delta") return Boolean(eventText(event).trim());
       if (event.type === "user.message") return Boolean(eventText(event).trim());
       return true;
@@ -208,16 +214,20 @@ async function refresh() {
       return;
     }
     const direct = await connectP2P(activeDeviceId.value);
-    const [sessionResult, settingsResult] = await Promise.all([
+    const [sessionResult, settingsResult, modelResult] = await Promise.all([
       direct
         ? p2p.request<{ sessions: SessionRecord[] }>("threads.list", {})
         : getThreads(activeDeviceId.value),
       direct
         ? p2p.request<AppSettings>("settings.get", {})
-        : getSettings(activeDeviceId.value)
+        : getSettings(activeDeviceId.value),
+      (direct
+        ? p2p.request<{ models: ModelOption[] }>("models.list", {})
+        : getModels(activeDeviceId.value)).catch(() => ({ models: [] }))
     ]);
     sessions.value = sessionResult.sessions;
     settings.value = settingsResult;
+    models.value = modelResult.models;
     collapseProjectsByDefault();
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : String(reason);
@@ -537,9 +547,14 @@ async function saveSettings(next: Partial<AppSettings>) {
 }
 
 function handleComposerKeydown(event: KeyboardEvent) {
-  if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
+  if (event.key !== "Enter" || (!event.ctrlKey && !event.metaKey)) return;
   event.preventDefault();
   void submitMessage();
+}
+
+function selectModel(event: Event) {
+  const model = (event.target as HTMLSelectElement).value;
+  void saveSettings({ model });
 }
 
 async function handlePaste(event: ClipboardEvent) {
@@ -671,6 +686,7 @@ function connectEvents(sessionId: string, reset = true) {
     "approval.requested",
     "approval.resolved",
     "turn.done",
+    "context.usage",
     "error"
   ];
   for (const type of types) {
@@ -689,6 +705,12 @@ function acceptRemoteEvent(event: RemoteEvent) {
   }
   if (!events.value.some((item) => eventKey(item) === eventKey(event))) events.value.push(event);
   if (events.value.length > 500) events.value = events.value.slice(-500);
+  if (event.type === "context.usage" && activeSession.value) {
+    const usage = event.payload.usage as TokenUsage | undefined;
+    if (usage?.last && usage?.total) {
+      upsertSession({ ...activeSession.value, tokenUsage: usage, updatedAt: event.ts });
+    }
+  }
   if (event.type === "session.status" && activeSession.value) {
     upsertSession({
       ...activeSession.value,
@@ -732,6 +754,31 @@ function formatTime(value: string) {
 
 function formatShortDate(value: string) {
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+}
+
+function formatTokenCount(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "0";
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}m`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+  return String(value);
+}
+
+function contextUsageLabel(session?: SessionRecord) {
+  const usage = session?.tokenUsage;
+  if (!usage) return "上下文 --";
+  const used = (usage.last.inputTokens || 0) + (usage.last.cachedInputTokens || 0);
+  const window = usage.modelContextWindow || 0;
+  return window > 0
+    ? `上下文 ${formatTokenCount(used)} / ${formatTokenCount(window)}`
+    : `上下文 ${formatTokenCount(used)}`;
+}
+
+function contextUsageTitle(session?: SessionRecord) {
+  const usage = session?.tokenUsage;
+  if (!usage) return "尚未收到 Codex 的上下文统计";
+  const used = (usage.last.inputTokens || 0) + (usage.last.cachedInputTokens || 0);
+  const window = usage.modelContextWindow || 0;
+  return window > 0 ? `当前上下文 ${used.toLocaleString("zh-CN")} / ${window.toLocaleString("zh-CN")} tokens` : `当前上下文 ${used.toLocaleString("zh-CN")} tokens`;
 }
 
 function projectLabel(cwd: string) {
@@ -921,6 +968,7 @@ function eventLabel(event: RemoteEvent) {
     "approval.requested": "需要审批",
     "approval.resolved": "审批结果",
     "turn.done": "完成",
+    "context.usage": "上下文",
     error: "错误"
   };
   return labels[event.type];
@@ -1264,6 +1312,19 @@ function transportLabel(status: typeof transportState.value) {
             <Cpu :size="16" />
             <span>{{ activeDevice?.name || "当前设备" }}</span>
           </div>
+          <label class="select-control model-control">
+            <Cpu :size="16" />
+            <select :value="settings.model" :disabled="!models.length" @change="selectModel">
+              <option value="">默认模型</option>
+              <option v-for="model in models" :key="model.id" :value="model.model" :title="model.description">
+                {{ model.displayName || model.model }}
+              </option>
+            </select>
+          </label>
+          <div class="status-item context-usage" :title="contextUsageTitle(activeSession)">
+            <Gauge :size="16" />
+            <span>{{ contextUsageLabel(activeSession) }}</span>
+          </div>
           <div class="segmented-control" aria-label="工作模式">
             <button type="button" :class="{ active: settings.workMode === 'edit' }" @click="saveSettings({ workMode: 'edit' })">编辑</button>
             <button type="button" :class="{ active: settings.workMode === 'plan' }" @click="saveSettings({ workMode: 'plan' })">计划</button>
@@ -1347,7 +1408,7 @@ function transportLabel(status: typeof transportState.value) {
           </label>
           <textarea
             v-model="draft"
-            rows="1"
+            rows="3"
             placeholder="继续给 Codex 发消息"
             :disabled="!activeSession"
             @keydown="handleComposerKeydown"

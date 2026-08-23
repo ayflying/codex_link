@@ -24,14 +24,40 @@ import (
 const baseDeveloperInstructions = "请全程使用中文与用户交流。除非用户明确要求其他语言，否则回复、解释、状态说明和审批说明均使用简体中文。"
 
 type Session struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Mode      string `json:"mode"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"createdAt"`
-	UpdatedAt string `json:"updatedAt"`
-	Cwd       string `json:"cwd,omitempty"`
-	Note      string `json:"note,omitempty"`
+	ID         string      `json:"id"`
+	Title      string      `json:"title"`
+	Mode       string      `json:"mode"`
+	Status     string      `json:"status"`
+	CreatedAt  string      `json:"createdAt"`
+	UpdatedAt  string      `json:"updatedAt"`
+	Cwd        string      `json:"cwd,omitempty"`
+	Note       string      `json:"note,omitempty"`
+	Model      string      `json:"model,omitempty"`
+	TokenUsage *TokenUsage `json:"tokenUsage,omitempty"`
+}
+
+type TokenUsageBreakdown struct {
+	CachedInputTokens     int64 `json:"cachedInputTokens"`
+	InputTokens           int64 `json:"inputTokens"`
+	OutputTokens          int64 `json:"outputTokens"`
+	ReasoningOutputTokens int64 `json:"reasoningOutputTokens"`
+	TotalTokens           int64 `json:"totalTokens"`
+}
+
+type TokenUsage struct {
+	Last               TokenUsageBreakdown `json:"last"`
+	Total              TokenUsageBreakdown `json:"total"`
+	ModelContextWindow *int64              `json:"modelContextWindow,omitempty"`
+}
+
+type ModelOption struct {
+	ID                        string                   `json:"id"`
+	Model                     string                   `json:"model"`
+	DisplayName               string                   `json:"displayName"`
+	Description               string                   `json:"description"`
+	IsDefault                 bool                     `json:"isDefault"`
+	Hidden                    bool                     `json:"hidden"`
+	SupportedReasoningEfforts []map[string]interface{} `json:"supportedReasoningEfforts,omitempty"`
 }
 
 type Event struct {
@@ -63,6 +89,7 @@ type storeFile struct {
 type AppSettings struct {
 	ApprovalMode string `json:"approvalMode"`
 	WorkMode     string `json:"workMode"`
+	Model        string `json:"model"`
 }
 
 type Attachment struct {
@@ -99,7 +126,7 @@ func (s *Store) load() {
 		s.sessions[session.ID] = session
 	}
 	s.events = file.Events
-	if file.Settings.ApprovalMode != "" || file.Settings.WorkMode != "" {
+	if file.Settings.ApprovalMode != "" || file.Settings.WorkMode != "" || file.Settings.Model != "" {
 		s.settings = normalizeSettings(file.Settings)
 	}
 	for _, event := range s.events {
@@ -121,6 +148,7 @@ func (s *Store) persistLocked() {
 
 func (s *Store) UpsertSession(session Session) {
 	s.mu.Lock()
+	session = mergeSessionMetadata(s.sessions[session.ID], session)
 	s.sessions[session.ID] = session
 	s.persistLocked()
 	hook := s.sessionHook
@@ -128,6 +156,22 @@ func (s *Store) UpsertSession(session Session) {
 	if hook != nil {
 		hook(session)
 	}
+}
+
+func (s *Store) EnrichSession(session Session) Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return mergeSessionMetadata(s.sessions[session.ID], session)
+}
+
+func mergeSessionMetadata(existing, incoming Session) Session {
+	if incoming.Model == "" {
+		incoming.Model = existing.Model
+	}
+	if incoming.TokenUsage == nil {
+		incoming.TokenUsage = existing.TokenUsage
+	}
+	return incoming
 }
 
 func (s *Store) SetEventHook(hook func(Event)) {
@@ -493,6 +537,13 @@ func (b *Bridge) mapCodexEvent(method string, params interface{}, requestID int6
 	case "error":
 		b.updateStatus("error")
 		b.emit("error", payload)
+	case "thread/tokenUsage/updated":
+		threadID := stringValue(payload["threadId"])
+		usage := parseTokenUsage(payload["tokenUsage"])
+		if threadID != "" && usage != nil {
+			b.updateTokenUsage(threadID, usage)
+			b.emitForSession(threadID, "context.usage", map[string]interface{}{"usage": usage})
+		}
 	}
 }
 
@@ -512,9 +563,42 @@ func (b *Bridge) ListThreads() ([]Session, error) {
 	data, _ := asMap(result)["data"].([]interface{})
 	sessions := []Session{}
 	for _, raw := range data {
-		sessions = append(sessions, threadToSession(asMap(raw)))
+		sessions = append(sessions, b.store.EnrichSession(threadToSession(asMap(raw))))
 	}
 	return sessions, nil
+}
+
+func (b *Bridge) ListModels() ([]ModelOption, error) {
+	if err := b.ensureReady(); err != nil {
+		return nil, err
+	}
+	result, err := b.request("model/list", map[string]interface{}{"limit": 100, "includeHidden": false})
+	if err != nil {
+		return nil, err
+	}
+	data, _ := asMap(result)["data"].([]interface{})
+	models := make([]ModelOption, 0, len(data))
+	for _, raw := range data {
+		item := asMap(raw)
+		model := ModelOption{
+			ID:          stringValue(item["id"]),
+			Model:       stringValue(item["model"]),
+			DisplayName: stringValue(item["displayName"]),
+			Description: stringValue(item["description"]),
+			IsDefault:   boolValue(item["isDefault"]),
+			Hidden:      boolValue(item["hidden"]),
+		}
+		if model.Model == "" {
+			model.Model = model.ID
+		}
+		if model.ID == "" {
+			model.ID = model.Model
+		}
+		if model.Model != "" {
+			models = append(models, model)
+		}
+	}
+	return models, nil
 }
 
 func (b *Bridge) ResumeThread(threadID string) (Session, error) {
@@ -540,6 +624,8 @@ func (b *Bridge) ResumeThread(threadID string) (Session, error) {
 	}
 	thread := asMap(asMap(result)["thread"])
 	session := threadToSession(thread)
+	session.Model = stringValue(asMap(result)["model"])
+	session = b.store.EnrichSession(session)
 	b.mu.Lock()
 	b.codexThreadID = session.ID
 	b.session = &session
@@ -607,10 +693,11 @@ func (b *Bridge) CreateSession(prompt string) (Session, error) {
 
 func (b *Bridge) startCodexThread() error {
 	settings := b.store.Settings()
-	result, err := b.request("thread/start", withRuntimeOptions(map[string]interface{}{
+	params := withRuntimeOptions(map[string]interface{}{
 		"cwd":                   b.cwd,
 		"developerInstructions": developerInstructions(settings),
-	}, settings))
+	}, settings)
+	result, err := b.request("thread/start", withModelOption(params, settings))
 	if err != nil {
 		return err
 	}
@@ -623,6 +710,7 @@ func (b *Bridge) startCodexThread() error {
 	b.codexThreadID = threadID
 	if b.session != nil {
 		b.session.ID = threadID
+		b.session.Model = stringValue(asMap(result)["model"])
 	}
 	b.mu.Unlock()
 	return nil
@@ -650,12 +738,13 @@ func (b *Bridge) SendMessage(text, sessionID string, attachments []Attachment) e
 	threadID := b.codexThreadID
 	b.mu.Unlock()
 	settings := b.store.Settings()
-	result, err := b.request("turn/start", withRuntimeOptions(map[string]interface{}{
+	params := withRuntimeOptions(map[string]interface{}{
 		"threadId": threadID,
 		"input": []map[string]interface{}{
 			{"type": "text", "text": text, "text_elements": []interface{}{}},
 		},
-	}, settings))
+	}, settings)
+	result, err := b.request("turn/start", withModelOption(params, settings))
 	if err != nil {
 		return err
 	}
@@ -759,6 +848,22 @@ func (b *Bridge) emit(kind string, payload map[string]interface{}) {
 	b.emitAt(kind, payload, time.Now().Format(time.RFC3339))
 }
 
+func (b *Bridge) updateTokenUsage(threadID string, usage *TokenUsage) {
+	b.mu.Lock()
+	if b.session == nil || b.session.ID != threadID {
+		b.mu.Unlock()
+		return
+	}
+	b.session.TokenUsage = usage
+	session := *b.session
+	b.mu.Unlock()
+	b.store.UpsertSession(session)
+}
+
+func (b *Bridge) emitForSession(sessionID, kind string, payload map[string]interface{}) {
+	b.store.Append(Event{SessionID: sessionID, Type: kind, TS: time.Now().Format(time.RFC3339), Payload: payload})
+}
+
 func (b *Bridge) emitAt(kind string, payload map[string]interface{}, ts string) {
 	b.mu.Lock()
 	if b.session == nil {
@@ -768,6 +873,18 @@ func (b *Bridge) emitAt(kind string, payload map[string]interface{}, ts string) 
 	sessionID := b.session.ID
 	b.mu.Unlock()
 	b.store.Append(Event{SessionID: sessionID, Type: kind, TS: ts, Payload: payload})
+}
+
+func parseTokenUsage(value interface{}) *TokenUsage {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var usage TokenUsage
+	if json.Unmarshal(raw, &usage) != nil {
+		return nil
+	}
+	return &usage
 }
 
 func main() {
@@ -890,6 +1007,11 @@ func stringValue(value interface{}) string {
 	}
 }
 
+func boolValue(value interface{}) bool {
+	typed, ok := value.(bool)
+	return ok && typed
+}
+
 func firstNonEmpty(values ...interface{}) interface{} {
 	for _, value := range values {
 		if str := stringValue(value); str != "" {
@@ -920,7 +1042,7 @@ func timestampToISO(value interface{}) string {
 }
 
 func defaultSettings() AppSettings {
-	return AppSettings{ApprovalMode: "on-request", WorkMode: "edit"}
+	return AppSettings{ApprovalMode: "on-request", WorkMode: "edit", Model: ""}
 }
 
 func normalizeSettings(settings AppSettings) AppSettings {
@@ -930,6 +1052,7 @@ func normalizeSettings(settings AppSettings) AppSettings {
 	if settings.WorkMode != "edit" && settings.WorkMode != "plan" {
 		settings.WorkMode = "edit"
 	}
+	settings.Model = strings.TrimSpace(settings.Model)
 	return settings
 }
 
@@ -964,6 +1087,13 @@ func withRuntimeOptions(params map[string]interface{}, settings AppSettings) map
 		params["sandbox_mode"] = "danger-full-access"
 	}
 	params["workMode"] = settings.WorkMode
+	return params
+}
+
+func withModelOption(params map[string]interface{}, settings AppSettings) map[string]interface{} {
+	if model := strings.TrimSpace(settings.Model); model != "" {
+		params["model"] = model
+	}
 	return params
 }
 

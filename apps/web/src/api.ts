@@ -9,6 +9,22 @@ export type SessionRecord = {
   updatedAt: string;
   cwd?: string;
   note?: string;
+  model?: string;
+  tokenUsage?: TokenUsage;
+};
+
+export type TokenUsageBreakdown = {
+  cachedInputTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  totalTokens: number;
+};
+
+export type TokenUsage = {
+  last: TokenUsageBreakdown;
+  total: TokenUsageBreakdown;
+  modelContextWindow?: number;
 };
 
 export type RemoteEvent = {
@@ -23,6 +39,7 @@ export type RemoteEvent = {
     | "approval.requested"
     | "approval.resolved"
     | "turn.done"
+    | "context.usage"
     | "error";
   ts: string;
   payload: Record<string, unknown>;
@@ -62,6 +79,16 @@ export type RemoteDevice = {
 export type AppSettings = {
   approvalMode: "on-request" | "on-failure" | "never";
   workMode: "edit" | "plan";
+  model: string;
+};
+
+export type ModelOption = {
+  id: string;
+  model: string;
+  displayName: string;
+  description: string;
+  isDefault: boolean;
+  hidden?: boolean;
 };
 
 export type Attachment = {
@@ -153,6 +180,10 @@ export async function getSessions(deviceId?: string) {
 
 export async function getThreads(deviceId?: string) {
   return request<{ sessions: SessionRecord[] }>(withDevice("/api/threads", deviceId));
+}
+
+export async function getModels(deviceId?: string) {
+  return request<{ models: ModelOption[] }>(withDevice("/api/models", deviceId));
 }
 
 export async function getDevices() {
