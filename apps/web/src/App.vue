@@ -18,6 +18,8 @@ import {
   Send,
   ShieldCheck,
   Trash2,
+  User,
+  LogOut,
   X
 } from "@lucide/vue";
 import {
@@ -60,7 +62,8 @@ const loginPassword = ref("");
 const registerMode = ref(false);
 const currentPassword = ref("");
 const newPassword = ref("");
-const passwordPanelOpen = ref(false);
+const userMenuOpen = ref(false);
+const modalView = ref<"user" | "tokens" | null>(null);
 const passwordMessage = ref("");
 const tokens = ref<AccessToken[]>([]);
 const tokenName = ref("");
@@ -279,7 +282,18 @@ async function signOut() {
   devices.value = [];
   tokens.value = [];
   activeDeviceId.value = "";
-  passwordPanelOpen.value = false;
+  userMenuOpen.value = false;
+  modalView.value = null;
+}
+
+function openModal(view: "user" | "tokens") {
+  userMenuOpen.value = false;
+  error.value = "";
+  modalView.value = view;
+}
+
+function closeModal() {
+  modalView.value = null;
 }
 
 async function selectDevice(device: RemoteDevice) {
@@ -1037,77 +1051,104 @@ function transportLabel(status: typeof transportState.value) {
         <button class="icon-button" type="button" title="刷新状态" @click="refresh">
           <RefreshCw :size="19" />
         </button>
-        <button class="icon-button" type="button" title="安全设置" @click="passwordPanelOpen = !passwordPanelOpen">
-          <KeyRound :size="19" />
-        </button>
+        <div class="user-menu">
+          <button class="user-menu-trigger" type="button" :aria-expanded="userMenuOpen" aria-haspopup="menu" @click="userMenuOpen = !userMenuOpen">
+            <User :size="17" />
+            <span>{{ auth.username || "用户" }}</span>
+            <ChevronDown :size="16" :class="{ open: userMenuOpen }" />
+          </button>
+          <div v-if="userMenuOpen" class="user-menu-panel" role="menu">
+            <button class="user-menu-item" type="button" role="menuitem" @click="openModal('user')">
+              <User :size="16" />
+              <span>用户管理</span>
+            </button>
+            <button class="user-menu-item" type="button" role="menuitem" @click="openModal('tokens')">
+              <KeyRound :size="16" />
+              <span>秘钥管理</span>
+            </button>
+            <button class="user-menu-item user-menu-logout" type="button" role="menuitem" @click="signOut">
+              <LogOut :size="16" />
+              <span>退出登录</span>
+            </button>
+          </div>
+        </div>
       </div>
     </header>
 
     <p v-if="error" class="error">{{ error }}</p>
 
-    <section v-if="passwordPanelOpen" class="password-panel">
-      <div class="account-heading">
-        <strong>账号安全</strong>
-        <p>当前账号：{{ auth.username || "已登录" }}</p>
-      </div>
-      <div class="account-actions">
-        <form class="password-form" @submit.prevent="savePassword">
-          <input v-model="currentPassword" type="password" autocomplete="current-password" placeholder="当前密码" />
-          <input v-model="newPassword" type="password" autocomplete="new-password" placeholder="新密码，至少 8 个字符" />
-          <button class="primary icon-text" type="submit" :disabled="loading || !newPassword.trim()">
-            <KeyRound :size="18" />
-            <span>修改密码</span>
-          </button>
-        </form>
-        <button class="icon-button sign-out" type="button" title="退出登录" @click="signOut">
-          <X :size="18" />
-        </button>
-      </div>
-      <div class="token-manager">
-        <div class="token-heading">
+    <div v-if="modalView" class="modal-backdrop" role="presentation" @click.self="closeModal">
+      <section class="modal" role="dialog" aria-modal="true" :aria-labelledby="`${modalView}-modal-title`">
+        <header class="modal-header">
           <div>
-            <strong>客户端 Token</strong>
-            <p>客户端使用 Token 登录并绑定到设备。Token 会保存到服务端数据库。</p>
+            <p class="eyebrow">{{ modalView === "user" ? "Account" : "Access keys" }}</p>
+            <h2 :id="`${modalView}-modal-title`">{{ modalView === "user" ? "用户管理" : "秘钥管理" }}</h2>
           </div>
-          <span>{{ tokens.length }} 个</span>
-        </div>
-        <form class="token-create" @submit.prevent="createAccessToken">
-          <input v-model="tokenName" type="text" placeholder="Token 名称，例如办公室电脑" />
-          <button class="primary icon-text" type="submit" :disabled="loading">
-            <Plus :size="18" />
-            <span>创建 Token</span>
+          <button class="icon-button compact" type="button" title="关闭弹框" @click="closeModal">
+            <X :size="17" />
           </button>
-        </form>
-        <div v-if="tokens.length" class="token-list">
-          <article v-for="token in tokens" :key="token.id" class="token-card">
-            <div class="token-card-heading">
-              <strong>{{ token.name }}</strong>
-              <small>{{ token.prefix }}</small>
-            </div>
-            <div class="token-value-row">
-              <code>{{ token.token }}</code>
-              <button class="icon-button compact" type="button" title="复制 Token" @click="copyToken(token.token)">
-                <Copy :size="16" />
-              </button>
-            </div>
-            <p>创建于 {{ formatShortDate(token.createdAt) }}<span v-if="token.lastUsedAt">，最后使用于 {{ formatShortDate(token.lastUsedAt) }}</span></p>
-            <div class="token-card-actions">
-              <button class="icon-button icon-text" type="button" :disabled="loading" @click="rotateAccessToken(token)">
-                <RefreshCw :size="16" />
-                <span>刷新</span>
-              </button>
-              <button class="danger icon-text" type="button" :disabled="loading" @click="revokeAccessToken(token)">
-                <Trash2 :size="16" />
-                <span>删除</span>
-              </button>
-            </div>
-          </article>
+        </header>
+
+        <div v-if="modalView === 'user'" class="modal-body user-modal-body">
+          <p class="modal-description">当前登录用户：{{ auth.username || "已登录" }}</p>
+          <form class="password-form" @submit.prevent="savePassword">
+            <input v-model="currentPassword" type="password" autocomplete="current-password" placeholder="当前密码" />
+            <input v-model="newPassword" type="password" autocomplete="new-password" placeholder="新密码，至少 8 个字符" />
+            <button class="primary icon-text" type="submit" :disabled="loading || !newPassword.trim()">
+              <KeyRound :size="18" />
+              <span>修改密码</span>
+            </button>
+          </form>
+          <small v-if="passwordMessage" class="modal-message">{{ passwordMessage }}</small>
         </div>
-        <p v-else class="token-empty">还没有 Token，请先创建一个供客户端登录。</p>
-      </div>
-      <small v-if="passwordMessage">{{ passwordMessage }}</small>
-      <small v-if="tokenMessage">{{ tokenMessage }}</small>
-    </section>
+
+        <div v-else class="modal-body">
+          <div class="token-manager">
+            <div class="token-heading">
+              <div>
+                <strong>客户端秘钥</strong>
+                <p>客户端使用秘钥登录并绑定到设备。</p>
+              </div>
+              <span>{{ tokens.length }} 个</span>
+            </div>
+            <form class="token-create" @submit.prevent="createAccessToken">
+              <input v-model="tokenName" type="text" placeholder="秘钥名称，例如办公室电脑" />
+              <button class="primary icon-text" type="submit" :disabled="loading">
+                <Plus :size="18" />
+                <span>创建秘钥</span>
+              </button>
+            </form>
+            <div v-if="tokens.length" class="token-list">
+              <article v-for="token in tokens" :key="token.id" class="token-card">
+                <div class="token-card-heading">
+                  <strong>{{ token.name }}</strong>
+                  <small>{{ token.prefix }}</small>
+                </div>
+                <div class="token-value-row">
+                  <code>{{ token.token }}</code>
+                  <button class="icon-button compact" type="button" title="复制秘钥" @click="copyToken(token.token)">
+                    <Copy :size="16" />
+                  </button>
+                </div>
+                <p>创建于 {{ formatShortDate(token.createdAt) }}<span v-if="token.lastUsedAt">，最后使用于 {{ formatShortDate(token.lastUsedAt) }}</span></p>
+                <div class="token-card-actions">
+                  <button class="icon-button icon-text" type="button" :disabled="loading" @click="rotateAccessToken(token)">
+                    <RefreshCw :size="16" />
+                    <span>刷新</span>
+                  </button>
+                  <button class="danger icon-text" type="button" :disabled="loading" @click="revokeAccessToken(token)">
+                    <Trash2 :size="16" />
+                    <span>删除</span>
+                  </button>
+                </div>
+              </article>
+            </div>
+            <p v-else class="token-empty">还没有秘钥，请先创建一个供客户端登录。</p>
+          </div>
+          <small v-if="tokenMessage" class="modal-message">{{ tokenMessage }}</small>
+        </div>
+      </section>
+    </div>
 
     <section v-if="!activeDeviceId" class="device-page">
       <div class="device-page-heading">
