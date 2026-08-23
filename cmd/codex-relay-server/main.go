@@ -1100,7 +1100,7 @@ func (s *relayServer) health(w http.ResponseWriter, request *http.Request) {
 	if err := s.store.ping(); err != nil {
 		databaseStatus = "error"
 	}
-	writeJSON(w, map[string]interface{}{"ok": databaseStatus == "ok", "mode": "relay-server", "database": databaseStatus, "devices": devices, "connectedDevices": s.agentCount(user.ID), "p2pOnly": s.p2pOnly, "stunOnly": s.stunConn != nil})
+	writeJSON(w, map[string]interface{}{"ok": databaseStatus == "ok", "mode": "relay-server", "database": databaseStatus, "schemaVersion": s.store.schemaVersion.Load(), "devices": devices, "connectedDevices": s.agentCount(user.ID), "p2pOnly": s.p2pOnly, "stunOnly": s.stunConn != nil})
 }
 
 func (s *relayServer) devices(w http.ResponseWriter, request *http.Request) {

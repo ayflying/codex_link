@@ -1,0 +1,41 @@
+package main
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestParseMigrationFilename(t *testing.T) {
+	version, name, err := parseMigrationFilename("001_init.sql")
+	if err != nil || version != 1 || name != "init" {
+		t.Fatalf("unexpected migration filename result: version=%d name=%q err=%v", version, name, err)
+	}
+	for _, filename := range []string{"init.sql", "000_init.sql", "001.sql", "001_init.txt"} {
+		if _, _, err := parseMigrationFilename(filename); err == nil {
+			t.Fatalf("expected invalid migration filename: %s", filename)
+		}
+	}
+}
+
+func TestLoadSQLMigrations(t *testing.T) {
+	migrations, err := loadSQLMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	if len(migrations) != 1 || migrations[0].version != 1 || migrations[0].name != "init" {
+		t.Fatalf("unexpected migrations: %#v", migrations)
+	}
+	if len(migrations[0].statements) != 7 {
+		t.Fatalf("expected seven initial schema statements, got %d", len(migrations[0].statements))
+	}
+	if len(migrations[0].checksum) != 64 || strings.Trim(migrations[0].checksum, "0123456789abcdef") != "" {
+		t.Fatalf("unexpected migration checksum: %q", migrations[0].checksum)
+	}
+}
+
+func TestSplitMigrationStatements(t *testing.T) {
+	statements := splitMigrationStatements(" CREATE TABLE one (id INT);\n\n; ALTER TABLE one ADD value TEXT; ")
+	if len(statements) != 2 || statements[0] != "CREATE TABLE one (id INT)" || statements[1] != "ALTER TABLE one ADD value TEXT" {
+		t.Fatalf("unexpected split statements: %#v", statements)
+	}
+}

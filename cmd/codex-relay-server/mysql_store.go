@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -12,19 +11,18 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
 )
 
-//go:embed migrations/001_init.sql
-var mysqlSchema embed.FS
-
 type mysqlRelayStore struct {
-	db          *sql.DB
-	uploadDir   string
-	mu          sync.Mutex
-	subscribers map[string]map[chan Event]struct{}
+	db            *sql.DB
+	uploadDir     string
+	mu            sync.Mutex
+	subscribers   map[string]map[chan Event]struct{}
+	schemaVersion atomic.Int64
 }
 
 type accessTokenRecord struct {
@@ -68,10 +66,12 @@ func newMySQLRelayStore(uploadDir string) (*mysqlRelayStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	if err := store.migrate(); err != nil {
+	version, err := store.migrate()
+	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
+	store.schemaVersion.Store(version)
 	return store, nil
 }
 
@@ -86,23 +86,6 @@ func (s *mysqlRelayStore) waitReady() error {
 		time.Sleep(time.Second)
 	}
 	return fmt.Errorf("连接 MySQL 超时: %w", lastErr)
-}
-
-func (s *mysqlRelayStore) migrate() error {
-	raw, err := mysqlSchema.ReadFile("migrations/001_init.sql")
-	if err != nil {
-		return fmt.Errorf("读取 MySQL schema 失败: %w", err)
-	}
-	for _, statement := range strings.Split(string(raw), ";") {
-		statement = strings.TrimSpace(statement)
-		if statement == "" {
-			continue
-		}
-		if _, err := s.db.Exec(statement); err != nil {
-			return fmt.Errorf("执行 MySQL schema 失败: %w", err)
-		}
-	}
-	return nil
 }
 
 func (s *mysqlRelayStore) close() error { return s.db.Close() }

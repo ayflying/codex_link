@@ -161,7 +161,7 @@ GET /api/p2p/ws?deviceId=<设备 ID>&clientId=<本次网页连接 ID>
 
 ### GET `/api/health`
 
-返回服务端模式、MySQL 状态、当前账号的在线设备数量和设备列表。该接口仍受认证保护。
+返回服务端模式、MySQL 状态、当前数据库迁移版本、当前账号的在线设备数量和设备列表。该接口仍受认证保护。
 
 ### GET `/api/threads`
 
