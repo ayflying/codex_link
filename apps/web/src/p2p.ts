@@ -213,7 +213,7 @@ export class P2PTransport {
   private async createPeerConnection(iceServers: string[]) {
     if (this.peerConnection) return;
     const peerConnection = new RTCPeerConnection({
-      iceServers: (iceServers.length ? iceServers : ["stun:stun.l.google.com:19302"]).map((urls) => ({ urls }))
+      iceServers: iceServers.map((urls) => ({ urls }))
     });
     this.peerConnection = peerConnection;
     peerConnection.onicecandidate = (event) => {

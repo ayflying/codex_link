@@ -30,7 +30,6 @@ services:
       UPLOAD_DIR: /data/uploads
       WEB_DIR: /app/web
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
-      WEBRTC_STUN_SERVERS: "stun:stun.l.google.com:19302"
       WEBRTC_STUN_PORT: "3478"
       WEBRTC_STUN_PUBLIC_PORT: "3478"
       WEBRTC_STUN_PUBLIC_HOST: ""

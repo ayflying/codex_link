@@ -21,6 +21,18 @@ func TestSTUNICEServerAddress(t *testing.T) {
 	}
 }
 
+func TestSTUNOnlyICEServerAddress(t *testing.T) {
+	server := &relayServer{
+		stunHost:       "relay.example.com",
+		stunPublicPort: "3478",
+		stunConn:       &net.UDPConn{},
+	}
+	servers := server.iceServersForRequest(httptest.NewRequest("GET", "https://ignored.example/", nil))
+	if len(servers) != 1 || servers[0] != "stun:relay.example.com:3478" {
+		t.Fatalf("unexpected STUN-only ICE servers: %#v", servers)
+	}
+}
+
 func TestSTUNBindingResponse(t *testing.T) {
 	request := stun.MustBuild(stun.TransactionID, stun.BindingRequest)
 	remoteAddr := &net.UDPAddr{IP: net.ParseIP("192.0.2.10"), Port: 54321}

@@ -78,7 +78,7 @@ func (a *remoteAgent) handleP2PMessage(message remoteEnvelope) {
 
 func (a *remoteAgent) acceptP2POffer(signal p2pSignal) {
 	a.closeP2PPeer(signal.ClientID)
-	iceServers := splitP2PList(getenv("WEBRTC_STUN_SERVERS", "stun:stun.l.google.com:19302"))
+	iceServers := splitP2PList(getenv("WEBRTC_STUN_SERVERS", ""))
 	if len(signal.ICEServers) > 0 {
 		iceServers = signal.ICEServers
 	}

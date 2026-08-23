@@ -622,7 +622,7 @@ func newRelayServer(uploadDir, webDir string) (*relayServer, error) {
 		webDir:         webDir,
 		agents:         map[string]*agentPeer{},
 		p2pBrowsers:    map[string]*p2pBrowser{},
-		iceServers:     splitList(env("WEBRTC_STUN_SERVERS", "stun:stun.l.google.com:19302")),
+		iceServers:     splitList(env("WEBRTC_STUN_SERVERS", "")),
 		stunPort:       env("WEBRTC_STUN_PORT", "3478"),
 		stunHost:       env("WEBRTC_STUN_PUBLIC_HOST", ""),
 		stunPublicPort: env("WEBRTC_STUN_PUBLIC_PORT", env("WEBRTC_STUN_PORT", "3478")),
