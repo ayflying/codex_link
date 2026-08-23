@@ -3,10 +3,12 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -45,6 +47,10 @@ type remoteAgent struct {
 	p2pPeers map[string]*p2pPeer
 	p2pOnly  atomic.Bool
 }
+
+const remoteHTTPTimeout = 15 * time.Second
+
+var remoteHTTPClient = &http.Client{Timeout: remoteHTTPTimeout}
 
 func isRemoteAgentMode() bool {
 	return len(os.Args) > 1 && strings.EqualFold(os.Args[1], "agent")
@@ -95,9 +101,14 @@ func loginRemoteAgentConfig(dataDir, serverURL, token, deviceName string) (remot
 		"deviceId":   deviceID,
 		"deviceName": deviceName,
 	})
-	response, err := http.Post(serverURL+"/api/agent/login", "application/json", bytes.NewReader(requestBody))
+	request, err := http.NewRequest(http.MethodPost, serverURL+"/api/agent/login", bytes.NewReader(requestBody))
 	if err != nil {
-		return remoteAgentConfig{}, err
+		return remoteAgentConfig{}, fmt.Errorf("创建登录请求失败: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := remoteHTTPClient.Do(request)
+	if err != nil {
+		return remoteAgentConfig{}, remoteRequestError(err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
@@ -181,9 +192,9 @@ func validateRemoteAgentConfig(config remoteAgentConfig) error {
 		return err
 	}
 	request.Header.Set("Authorization", "Bearer "+config.Token)
-	response, err := http.DefaultClient.Do(request)
+	response, err := remoteHTTPClient.Do(request)
 	if err != nil {
-		return err
+		return remoteRequestError(err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusUnauthorized {
@@ -461,9 +472,20 @@ func remoteHTTPURL(config remoteAgentConfig) (string, error) {
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return "", errors.New("服务端地址必须使用 http 或 https")
 	}
+	if parsed.Host == "" {
+		return "", errors.New("服务端地址必须包含主机名")
+	}
 	parsed.Path = ""
 	parsed.RawQuery = ""
 	return strings.TrimRight(parsed.String(), "/"), nil
+}
+
+func remoteRequestError(err error) error {
+	var networkError net.Error
+	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &networkError) && networkError.Timeout() {
+		return errors.New("连接服务端超时，请检查服务端地址、端口、防火墙和网络")
+	}
+	return fmt.Errorf("无法连接服务端: %w", err)
 }
 
 func loadRemoteAgentConfig(dataDir string) (remoteAgentConfig, error) {

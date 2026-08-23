@@ -8,7 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestDefaultRemoteAgentDataDirUsesLocalAppData(t *testing.T) {
@@ -78,6 +80,29 @@ func TestLoginRemoteAgentConfigSavesConfigAfterServerLogin(t *testing.T) {
 	loaded, err := loadRemoteAgentConfig(dataDir)
 	if err != nil || loaded.DeviceID != config.DeviceID || loaded.Token != config.Token {
 		t.Fatalf("saved config could not be loaded: %#v, %v", loaded, err)
+	}
+}
+
+func TestLoginRemoteAgentConfigReportsRequestTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	originalClient := remoteHTTPClient
+	remoteHTTPClient = &http.Client{Timeout: 20 * time.Millisecond}
+	t.Cleanup(func() { remoteHTTPClient = originalClient })
+
+	_, err := loginRemoteAgentConfig(t.TempDir(), server.URL, "crs_test-token", "测试电脑")
+	if err == nil || !strings.Contains(err.Error(), "连接服务端超时") {
+		t.Fatalf("expected a clear timeout error, got %v", err)
+	}
+}
+
+func TestRemoteHTTPURLRequiresHost(t *testing.T) {
+	_, err := remoteHTTPURL(remoteAgentConfig{ServerURL: "http://"})
+	if err == nil || !strings.Contains(err.Error(), "必须包含主机名") {
+		t.Fatalf("expected a missing-host error, got %v", err)
 	}
 }
 

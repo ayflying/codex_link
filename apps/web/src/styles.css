@@ -109,20 +109,9 @@ select:focus-visible {
 .brand-mark {
   width: 28px;
   height: 28px;
-  display: inline-flex;
-  align-items: end;
-  justify-content: center;
-  gap: 3px;
-  padding: 5px;
-  border: 1px solid rgba(117, 226, 214, 0.48);
-  border-radius: 7px;
-  background: rgba(26, 169, 157, 0.12);
+  display: block;
+  flex: none;
 }
-
-.brand-mark i { width: 4px; display: block; border-radius: 2px; background: #71dfd2; }
-.brand-mark i:nth-child(1) { height: 7px; }
-.brand-mark i:nth-child(2) { height: 12px; }
-.brand-mark i:nth-child(3) { height: 17px; }
 
 .brand-copy { min-width: 0; display: grid; gap: 2px; line-height: 1; }
 .brand-copy strong { color: inherit; font-size: 12px; letter-spacing: 0.12em; white-space: nowrap; }

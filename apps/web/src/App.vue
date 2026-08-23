@@ -1142,7 +1142,7 @@ function transportLabel(status: typeof transportState.value) {
   <main v-if="!authChecked" class="auth-shell">
     <section class="auth-panel">
       <div class="brand-lockup">
-        <span class="brand-mark" aria-hidden="true"><i /><i /><i /></span>
+        <img class="brand-mark" src="/codex-link.svg" alt="" />
         <span class="brand-copy"><strong>CODEX LINK</strong><small>REMOTE WORKSPACE</small></span>
       </div>
       <div class="auth-loading">
@@ -1155,7 +1155,7 @@ function transportLabel(status: typeof transportState.value) {
   <main v-else-if="!auth.authenticated" class="auth-shell">
     <section class="auth-intro">
       <div class="brand-lockup">
-        <span class="brand-mark" aria-hidden="true"><i /><i /><i /></span>
+        <img class="brand-mark" src="/codex-link.svg" alt="" />
         <span class="brand-copy"><strong>CODEX LINK</strong><small>REMOTE WORKSPACE</small></span>
       </div>
       <div class="auth-intro-copy">
@@ -1204,7 +1204,7 @@ function transportLabel(status: typeof transportState.value) {
           <ArrowLeft :size="18" />
         </button>
         <div class="brand-lockup app-brand">
-          <span class="brand-mark" aria-hidden="true"><i /><i /><i /></span>
+          <img class="brand-mark" src="/codex-link.svg" alt="" />
           <span class="brand-copy"><strong>CODEX LINK</strong><small>REMOTE WORKSPACE</small></span>
         </div>
         <div class="topbar-heading">

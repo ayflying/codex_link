@@ -5,9 +5,10 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io"
+	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -53,6 +54,8 @@ type clientGUI struct {
 
 	tray      win.NOTIFYICONDATA
 	trayReady bool
+	icon      win.HICON
+	ownsIcon  bool
 
 	connectResult *guiConnectResult
 	agentExitErr  string
@@ -67,13 +70,14 @@ type guiConnectResult struct {
 func runClientGUI(root, cwd, dataDir string) error {
 	config, _ := loadRemoteAgentConfig(dataDir)
 	instance := win.GetModuleHandle(nil)
+	icon, ownsIcon := createClientIcon()
 	className := syscall.StringToUTF16Ptr(clientWindowClass)
 	windowClass := win.WNDCLASSEX{
 		CbSize:        uint32(unsafe.Sizeof(win.WNDCLASSEX{})),
 		LpfnWndProc:   syscall.NewCallback(clientWindowProc),
 		HInstance:     instance,
-		HIcon:         win.LoadIcon(0, win.MAKEINTRESOURCE(win.IDI_APPLICATION)),
-		HIconSm:       win.LoadIcon(0, win.MAKEINTRESOURCE(win.IDI_APPLICATION)),
+		HIcon:         icon,
+		HIconSm:       icon,
 		HCursor:       win.LoadCursor(0, win.MAKEINTRESOURCE(win.IDC_ARROW)),
 		HbrBackground: win.GetSysColorBrush(win.COLOR_WINDOW),
 		LpszClassName: className,
@@ -82,7 +86,7 @@ func runClientGUI(root, cwd, dataDir string) error {
 		return fmt.Errorf("注册客户端窗口失败: %v", win.GetLastError())
 	}
 
-	gui := &clientGUI{root: root, cwd: cwd, dataDir: dataDir, config: config}
+	gui := &clientGUI{root: root, cwd: cwd, dataDir: dataDir, config: config, icon: icon, ownsIcon: ownsIcon}
 	hwnd := win.CreateWindowEx(
 		win.WS_EX_CONTROLPARENT,
 		className,
@@ -98,6 +102,9 @@ func runClientGUI(root, cwd, dataDir string) error {
 		unsafe.Pointer(gui),
 	)
 	if hwnd == 0 {
+		if ownsIcon {
+			win.DestroyIcon(icon)
+		}
 		return fmt.Errorf("创建客户端窗口失败: %v", win.GetLastError())
 	}
 
@@ -150,6 +157,7 @@ func clientWindowProc(hwnd win.HWND, message uint32, wParam, lParam uintptr) uin
 		}
 	case win.WM_DESTROY:
 		gui.removeTray()
+		gui.releaseIcon()
 		win.PostQuitMessage(0)
 	default:
 		return win.DefWindowProc(hwnd, message, wParam, lParam)
@@ -208,7 +216,7 @@ func (g *clientGUI) createTray() error {
 		UID:              1,
 		UFlags:           win.NIF_MESSAGE | win.NIF_ICON | win.NIF_TIP,
 		UCallbackMessage: wmTray,
-		HIcon:            win.LoadIcon(0, win.MAKEINTRESOURCE(win.IDI_APPLICATION)),
+		HIcon:            g.icon,
 	}
 	copy(g.tray.SzTip[:], syscall.StringToUTF16("Codex Link 客户端"))
 	if !win.Shell_NotifyIcon(win.NIM_ADD, &g.tray) {
@@ -226,6 +234,15 @@ func (g *clientGUI) removeTray() {
 	}
 	win.Shell_NotifyIcon(win.NIM_DELETE, &g.tray)
 	g.trayReady = false
+}
+
+func (g *clientGUI) releaseIcon() {
+	if !g.ownsIcon || g.icon == 0 {
+		return
+	}
+	win.DestroyIcon(g.icon)
+	g.icon = 0
+	g.ownsIcon = false
 }
 
 func (g *clientGUI) handleCommand(id uint16) {
@@ -347,10 +364,15 @@ func (g *clientGUI) startAgent(config remoteAgentConfig) error {
 	command := exec.Command(executable, "agent")
 	command.Dir = g.root
 	command.Env = append(os.Environ(), "DATA_DIR="+g.dataDir, "CODEX_CWD="+g.cwd)
-	command.Stdout = io.Discard
-	command.Stderr = io.Discard
+	logFile, err := openAgentGUILog(g.dataDir)
+	if err != nil {
+		return err
+	}
+	command.Stdout = logFile
+	command.Stderr = logFile
 	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	if err := command.Start(); err != nil {
+		_ = logFile.Close()
 		return err
 	}
 
@@ -358,6 +380,7 @@ func (g *clientGUI) startAgent(config remoteAgentConfig) error {
 	if g.quitting {
 		g.mu.Unlock()
 		_ = command.Process.Kill()
+		_ = logFile.Close()
 		return errors.New("客户端正在退出")
 	}
 	g.config = config
@@ -372,6 +395,9 @@ func (g *clientGUI) startAgent(config remoteAgentConfig) error {
 
 func (g *clientGUI) waitForAgent(command *exec.Cmd) {
 	err := command.Wait()
+	if logFile, ok := command.Stdout.(*os.File); ok {
+		_ = logFile.Close()
+	}
 	g.mu.Lock()
 	if g.process != command {
 		g.mu.Unlock()
@@ -382,7 +408,7 @@ func (g *clientGUI) waitForAgent(command *exec.Cmd) {
 	g.pollStop = nil
 	quitting := g.quitting
 	if err != nil {
-		g.agentExitErr = "后台客户端已退出，请检查 Codex 是否已安装。"
+		g.agentExitErr = agentExitDetail(err, filepath.Join(g.dataDir, "agent-gui.log"))
 	} else {
 		g.agentExitErr = "后台客户端已停止。"
 	}
@@ -567,4 +593,140 @@ func setWindowText(hwnd win.HWND, text string) {
 
 func messageBox(hwnd win.HWND, message, title string, flags uint32) {
 	win.MessageBox(hwnd, syscall.StringToUTF16Ptr(message), syscall.StringToUTF16Ptr(title), flags)
+}
+
+func openAgentGUILog(dataDir string) (*os.File, error) {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return nil, fmt.Errorf("创建客户端数据目录失败: %w", err)
+	}
+	path := filepath.Join(dataDir, "agent-gui.log")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("创建客户端诊断日志失败: %w", err)
+	}
+	return file, nil
+}
+
+func agentExitDetail(exitError error, logPath string) string {
+	detail := fmt.Sprintf("后台客户端异常退出: %v", exitError)
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		return detail
+	}
+	logText := strings.TrimSpace(string(raw))
+	if len(logText) > 3000 {
+		logText = logText[len(logText)-3000:]
+	}
+	if logText == "" {
+		return detail
+	}
+	return detail + "\r\n\r\n诊断日志:\r\n" + logText
+}
+
+func createClientIcon() (win.HICON, bool) {
+	const size = 64
+	pixels := make([]uint32, size*size)
+	fillRoundedIconRect(pixels, size, 3, 3, 60, 60, 16, iconColor(18, 37, 55))
+	strokeIconRing(pixels, size, 25, 25, 12, 5, iconColor(113, 223, 210))
+	strokeIconRing(pixels, size, 39, 39, 12, 5, iconColor(217, 95, 82))
+	strokeIconLine(pixels, size, 23, 32, 41, 32, 3, iconColor(247, 251, 255))
+	fillIconCircle(pixels, size, 32, 32, 4, iconColor(247, 251, 255))
+
+	header := win.BITMAPINFOHEADER{
+		BiSize:        uint32(unsafe.Sizeof(win.BITMAPINFOHEADER{})),
+		BiWidth:       size,
+		BiHeight:      -size,
+		BiPlanes:      1,
+		BiBitCount:    32,
+		BiCompression: win.BI_RGB,
+	}
+	var bits unsafe.Pointer
+	bitmap := win.CreateDIBSection(0, &header, win.DIB_RGB_COLORS, &bits, 0, 0)
+	if bitmap == 0 || bits == nil {
+		return win.LoadIcon(0, win.MAKEINTRESOURCE(win.IDI_APPLICATION)), false
+	}
+	copy(unsafe.Slice((*uint32)(bits), len(pixels)), pixels)
+	mask := win.CreateBitmap(size, size, 1, 1, nil)
+	if mask == 0 {
+		win.DeleteObject(win.HGDIOBJ(bitmap))
+		return win.LoadIcon(0, win.MAKEINTRESOURCE(win.IDI_APPLICATION)), false
+	}
+	icon := win.CreateIconIndirect(&win.ICONINFO{FIcon: win.TRUE, HbmColor: bitmap, HbmMask: mask})
+	win.DeleteObject(win.HGDIOBJ(bitmap))
+	win.DeleteObject(win.HGDIOBJ(mask))
+	if icon == 0 {
+		return win.LoadIcon(0, win.MAKEINTRESOURCE(win.IDI_APPLICATION)), false
+	}
+	return icon, true
+}
+
+func iconColor(red, green, blue byte) uint32 {
+	return uint32(0xff)<<24 | uint32(red)<<16 | uint32(green)<<8 | uint32(blue)
+}
+
+func fillRoundedIconRect(pixels []uint32, size, left, top, right, bottom, radius int, color uint32) {
+	for y := top; y <= bottom; y++ {
+		for x := left; x <= right; x++ {
+			nearX := minIcon(maxIcon(x, left+radius), right-radius)
+			nearY := minIcon(maxIcon(y, top+radius), bottom-radius)
+			if (x-nearX)*(x-nearX)+(y-nearY)*(y-nearY) <= radius*radius {
+				pixels[y*size+x] = color
+			}
+		}
+	}
+}
+
+func strokeIconRing(pixels []uint32, size, centerX, centerY, radius, width int, color uint32) {
+	outer := radius * radius
+	inner := (radius - width) * (radius - width)
+	for y := centerY - radius; y <= centerY+radius; y++ {
+		for x := centerX - radius; x <= centerX+radius; x++ {
+			if x < 0 || y < 0 || x >= size || y >= size {
+				continue
+			}
+			distance := (x-centerX)*(x-centerX) + (y-centerY)*(y-centerY)
+			if distance <= outer && distance >= inner {
+				pixels[y*size+x] = color
+			}
+		}
+	}
+}
+
+func strokeIconLine(pixels []uint32, size, fromX, fromY, toX, toY, width int, color uint32) {
+	deltaX, deltaY := float64(toX-fromX), float64(toY-fromY)
+	lengthSquared := deltaX*deltaX + deltaY*deltaY
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			position := ((float64(x-fromX)*deltaX + float64(y-fromY)*deltaY) / lengthSquared)
+			position = math.Max(0, math.Min(1, position))
+			distance := math.Hypot(float64(x-fromX)-position*deltaX, float64(y-fromY)-position*deltaY)
+			if distance <= float64(width) {
+				pixels[y*size+x] = color
+			}
+		}
+	}
+}
+
+func fillIconCircle(pixels []uint32, size, centerX, centerY, radius int, color uint32) {
+	for y := centerY - radius; y <= centerY+radius; y++ {
+		for x := centerX - radius; x <= centerX+radius; x++ {
+			if x >= 0 && y >= 0 && x < size && y < size && (x-centerX)*(x-centerX)+(y-centerY)*(y-centerY) <= radius*radius {
+				pixels[y*size+x] = color
+			}
+		}
+	}
+}
+
+func minIcon(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
+}
+
+func maxIcon(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }
