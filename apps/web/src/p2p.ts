@@ -16,6 +16,7 @@ type P2PSignal = {
   sdpMid?: string | null;
   sdpMLineIndex?: number | null;
   usernameFragment?: string | null;
+  iceServers?: string[];
 };
 
 type P2PCallbacks = {
@@ -47,6 +48,7 @@ export class P2PTransport {
   private clientId = "";
   private deviceIdValue = "";
   private opened = false;
+  private p2pOnlyValue = false;
   private remoteDescriptionSet = false;
   private pendingRemoteCandidates: RTCIceCandidateInit[] = [];
 
@@ -60,6 +62,14 @@ export class P2PTransport {
 
   isConnected() {
     return this.opened && this.channel?.readyState === "open";
+  }
+
+  isP2POnly() {
+    return this.p2pOnlyValue;
+  }
+
+  setP2POnly(value: boolean) {
+    this.p2pOnlyValue = value;
   }
 
   async connect(deviceId: string) {
@@ -169,8 +179,10 @@ export class P2PTransport {
       return;
     }
     if (message.type === "connected") {
-      void this.createPeerConnection(Array.isArray((message.payload as { iceServers?: unknown })?.iceServers)
-        ? ((message.payload as { iceServers: string[] }).iceServers)
+      const payload = message.payload as { iceServers?: unknown; p2pOnly?: unknown };
+      this.p2pOnlyValue = payload?.p2pOnly === true;
+      void this.createPeerConnection(Array.isArray(payload?.iceServers)
+        ? (payload.iceServers as string[])
         : []).catch((reason) => this.failConnection(reason instanceof Error ? reason : new Error(String(reason))));
       return;
     }
@@ -232,7 +244,7 @@ export class P2PTransport {
     };
     const offer = await peerConnection.createOffer();
     await peerConnection.setLocalDescription(offer);
-    this.sendSignal({ clientId: this.clientId, kind: "offer", sdp: offer.sdp || "" });
+    this.sendSignal({ clientId: this.clientId, kind: "offer", sdp: offer.sdp || "", iceServers });
   }
 
   private handleDataMessage(raw: string) {

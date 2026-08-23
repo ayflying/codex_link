@@ -19,13 +19,14 @@ const (
 )
 
 type p2pSignal struct {
-	ClientID         string  `json:"clientId"`
-	Kind             string  `json:"kind"`
-	SDP              string  `json:"sdp,omitempty"`
-	Candidate        string  `json:"candidate,omitempty"`
-	SDPMid           *string `json:"sdpMid,omitempty"`
-	SDPMLineIndex    *uint16 `json:"sdpMLineIndex,omitempty"`
-	UsernameFragment *string `json:"usernameFragment,omitempty"`
+	ClientID         string   `json:"clientId"`
+	Kind             string   `json:"kind"`
+	SDP              string   `json:"sdp,omitempty"`
+	Candidate        string   `json:"candidate,omitempty"`
+	SDPMid           *string  `json:"sdpMid,omitempty"`
+	SDPMLineIndex    *uint16  `json:"sdpMLineIndex,omitempty"`
+	UsernameFragment *string  `json:"usernameFragment,omitempty"`
+	ICEServers       []string `json:"iceServers,omitempty"`
 }
 
 type p2pUpload struct {
@@ -77,8 +78,12 @@ func (a *remoteAgent) handleP2PMessage(message remoteEnvelope) {
 
 func (a *remoteAgent) acceptP2POffer(signal p2pSignal) {
 	a.closeP2PPeer(signal.ClientID)
+	iceServers := splitP2PList(getenv("WEBRTC_STUN_SERVERS", "stun:stun.l.google.com:19302"))
+	if len(signal.ICEServers) > 0 {
+		iceServers = signal.ICEServers
+	}
 	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{{URLs: splitP2PList(getenv("WEBRTC_STUN_SERVERS", "stun:stun.l.google.com:19302"))}},
+		ICEServers: []webrtc.ICEServer{{URLs: iceServers}},
 	})
 	if err != nil {
 		a.sendP2PSignal(p2pSignal{ClientID: signal.ClientID, Kind: "error", SDP: err.Error()})

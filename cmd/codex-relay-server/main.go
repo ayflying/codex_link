@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -576,13 +577,19 @@ func (s *sessionTokens) remove(token string) {
 }
 
 type relayServer struct {
-	store       *mysqlRelayStore
-	webDir      string
-	mu          sync.Mutex
-	agents      map[string]*agentPeer
-	p2pBrowsers map[string]*p2pBrowser
-	iceServers  []string
-	upgrader    websocket.Upgrader
+	store          *mysqlRelayStore
+	webDir         string
+	mu             sync.Mutex
+	agents         map[string]*agentPeer
+	p2pBrowsers    map[string]*p2pBrowser
+	iceServers     []string
+	stunPort       string
+	stunHost       string
+	stunPublicPort string
+	p2pOnly        bool
+	stunConn       *net.UDPConn
+	stunWG         sync.WaitGroup
+	upgrader       websocket.Upgrader
 }
 
 type agentPeer struct {
@@ -611,11 +618,15 @@ func newRelayServer(uploadDir, webDir string) (*relayServer, error) {
 		return nil, err
 	}
 	return &relayServer{
-		store:       store,
-		webDir:      webDir,
-		agents:      map[string]*agentPeer{},
-		p2pBrowsers: map[string]*p2pBrowser{},
-		iceServers:  splitList(env("WEBRTC_STUN_SERVERS", "stun:stun.l.google.com:19302")),
+		store:          store,
+		webDir:         webDir,
+		agents:         map[string]*agentPeer{},
+		p2pBrowsers:    map[string]*p2pBrowser{},
+		iceServers:     splitList(env("WEBRTC_STUN_SERVERS", "stun:stun.l.google.com:19302")),
+		stunPort:       env("WEBRTC_STUN_PORT", "3478"),
+		stunHost:       env("WEBRTC_STUN_PUBLIC_HOST", ""),
+		stunPublicPort: env("WEBRTC_STUN_PUBLIC_PORT", env("WEBRTC_STUN_PORT", "3478")),
+		p2pOnly:        strings.EqualFold(env("WEBRTC_P2P_ONLY", "false"), "true"),
 		upgrader: websocket.Upgrader{CheckOrigin: func(request *http.Request) bool {
 			origin := request.Header.Get("Origin")
 			return origin == "" || sameOrigin(request, origin)
@@ -633,7 +644,18 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer server.store.close()
+	if err := server.startSTUN(); err != nil {
+		server.closeSTUN()
+		_ = server.store.close()
+		log.Fatal(err)
+	}
+	defer func() {
+		server.closeSTUN()
+		_ = server.store.close()
+	}()
+	if server.stunConn != nil {
+		log.Printf("STUN-only UDP: %s (仅用于 P2P 打洞，不提供中转)", server.stunConn.LocalAddr())
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/auth/status", server.authStatus)
 	mux.HandleFunc("/api/auth/register", server.authRegister)
@@ -660,7 +682,9 @@ func main() {
 	mux.HandleFunc("/", server.static)
 	address := host + ":" + port
 	log.Printf("Codex Relay Server: http://%s", strings.Replace(address, "0.0.0.0", "127.0.0.1", 1))
-	log.Fatal(http.ListenAndServe(address, withCORS(server.requireAuth(mux))))
+	if err := http.ListenAndServe(address, withCORS(server.requireAuth(mux))); err != nil {
+		log.Fatal(err)
+	}
 }
 
 func (s *relayServer) authStatus(w http.ResponseWriter, request *http.Request) {
@@ -944,7 +968,7 @@ func (s *relayServer) agentWebSocket(w http.ResponseWriter, request *http.Reques
 		s.unregisterPeer(peer)
 		_ = conn.Close()
 	}()
-	_ = peer.writeJSON(envelope{Type: "connected", Payload: mustJSON(map[string]interface{}{"deviceId": device.ID, "serverTime": time.Now().Format(time.RFC3339)})})
+	_ = peer.writeJSON(envelope{Type: "connected", Payload: mustJSON(map[string]interface{}{"deviceId": device.ID, "serverTime": time.Now().Format(time.RFC3339), "p2pOnly": s.p2pOnly})})
 	for {
 		var message envelope
 		if err := conn.ReadJSON(&message); err != nil {
@@ -980,7 +1004,7 @@ func (s *relayServer) p2pWebSocket(w http.ResponseWriter, request *http.Request)
 		s.unregisterP2PBrowser(browser)
 		_ = conn.Close()
 	}()
-	_ = browser.writeJSON(envelope{Type: "connected", Payload: mustJSON(map[string]interface{}{"deviceId": deviceID, "clientId": clientID, "iceServers": s.iceServers})})
+	_ = browser.writeJSON(envelope{Type: "connected", Payload: mustJSON(map[string]interface{}{"deviceId": deviceID, "clientId": clientID, "iceServers": s.iceServersForRequest(request), "p2pOnly": s.p2pOnly})})
 	for {
 		var message envelope
 		if err := conn.ReadJSON(&message); err != nil {
@@ -1076,7 +1100,7 @@ func (s *relayServer) health(w http.ResponseWriter, request *http.Request) {
 	if err := s.store.ping(); err != nil {
 		databaseStatus = "error"
 	}
-	writeJSON(w, map[string]interface{}{"ok": databaseStatus == "ok", "mode": "relay-server", "database": databaseStatus, "devices": devices, "connectedDevices": s.agentCount(user.ID)})
+	writeJSON(w, map[string]interface{}{"ok": databaseStatus == "ok", "mode": "relay-server", "database": databaseStatus, "devices": devices, "connectedDevices": s.agentCount(user.ID), "p2pOnly": s.p2pOnly, "stunOnly": s.stunConn != nil})
 }
 
 func (s *relayServer) devices(w http.ResponseWriter, request *http.Request) {

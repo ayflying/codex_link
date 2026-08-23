@@ -78,7 +78,7 @@ const error = ref("");
 const loading = ref(false);
 const eventSource = ref<EventSource | null>(null);
 const streamState = ref<"idle" | "connected" | "reconnecting">("idle");
-const transportState = ref<"idle" | "connecting" | "p2p" | "relay">("idle");
+const transportState = ref<"idle" | "connecting" | "p2p" | "relay" | "failed">("idle");
 const transcriptEl = ref<HTMLElement | null>(null);
 const renderLimit = ref(160);
 const forceScrollToBottom = ref(false);
@@ -90,6 +90,13 @@ const p2p = new P2PTransport({
   onEvent: (event) => acceptRemoteEvent(event),
   onSession: (session) => upsertSession(session),
   onClosed: () => {
+    if (p2p.isP2POnly()) {
+      eventSource.value?.close();
+      eventSource.value = null;
+      transportState.value = "failed";
+      streamState.value = "idle";
+      return;
+    }
     transportState.value = "relay";
     if (activeSessionId.value) connectEvents(activeSessionId.value);
   }
@@ -180,6 +187,9 @@ async function refresh() {
       getTokens()
     ]);
     health.value = healthResult;
+    if (typeof healthResult === "object" && healthResult !== null && "p2pOnly" in healthResult) {
+      p2p.setP2POnly(Boolean((healthResult as { p2pOnly?: unknown }).p2pOnly));
+    }
     devices.value = deviceResult.devices;
     tokens.value = tokenResult.tokens;
     if (!activeDeviceId.value) {
@@ -259,6 +269,7 @@ async function savePassword() {
 
 async function signOut() {
   p2p.close(false);
+  p2p.setP2POnly(false);
   await logout();
   auth.value = await getAuthStatus();
   activeSessionId.value = "";
@@ -301,7 +312,11 @@ async function connectP2P(deviceId: string) {
     await p2p.connect(deviceId);
     transportState.value = "p2p";
     return true;
-  } catch {
+  } catch (reason) {
+    if (p2p.isP2POnly()) {
+      transportState.value = "failed";
+      throw reason;
+    }
     transportState.value = "relay";
     return false;
   }
@@ -359,12 +374,16 @@ async function refreshTokens() {
 }
 
 async function commandWithFallback<T>(action: string, payload: unknown, fallback: () => Promise<T>) {
-  if (!p2p.isConnected()) return fallback();
+  if (!p2p.isConnected()) {
+    if (p2p.isP2POnly()) throw new Error("P2P 连接未建立，已禁止服务端中转");
+    return fallback();
+  }
   try {
     return await p2p.request<T>(action, payload);
   } catch (reason) {
     if (reason instanceof P2PRemoteError) throw reason;
     p2p.close(true);
+    if (p2p.isP2POnly()) throw reason;
     return fallback();
   }
 }
@@ -512,6 +531,9 @@ async function addImageFile(file: File) {
   if (!file.type.startsWith("image/")) return;
   const dataUrl = await fileToDataURL(file);
   const name = file.name || `image-${Date.now()}.png`;
+  if (!p2p.isConnected() && p2p.isP2POnly()) {
+    throw new Error("P2P 连接未建立，已禁止服务端图片中转");
+  }
   if (p2p.isConnected()) {
     try {
       const attachment = await p2p.uploadAttachment(name, file.type, dataUrl);
@@ -519,6 +541,7 @@ async function addImageFile(file: File) {
       return;
     } catch {
       p2p.close(true);
+      if (p2p.isP2POnly()) throw new Error("P2P 图片传输失败，已禁止服务端中转");
     }
   }
   const { attachment } = await uploadImage(name, file.type, dataUrl);
@@ -529,9 +552,11 @@ async function relayAttachments(source: Attachment[]) {
   const result: Attachment[] = [];
   for (const attachment of source) {
     if (attachment.transport !== "p2p") {
+      if (p2p.isP2POnly()) throw new Error("P2P-only 模式不允许使用服务端图片");
       result.push(attachment);
       continue;
     }
+    if (p2p.isP2POnly()) throw new Error("P2P 图片无法回退到服务端，请重新选择图片");
     if (!attachment.dataUrl) throw new Error("P2P 图片无法回退到服务端，请重新选择图片");
     const uploaded = await uploadImage(attachment.name || `image-${Date.now()}.png`, attachment.mimeType || "image/png", attachment.dataUrl);
     result.push({ ...uploaded.attachment, transport: "relay" });
@@ -584,6 +609,12 @@ function connectEvents(sessionId: string, reset = true) {
 
   if (p2p.isConnected()) {
     streamState.value = "connected";
+    return;
+  }
+
+  if (p2p.isP2POnly()) {
+    streamState.value = "idle";
+    transportState.value = "failed";
     return;
   }
 
@@ -903,7 +934,8 @@ function transportLabel(status: typeof transportState.value) {
     idle: "未连接",
     connecting: "P2P 协商中",
     p2p: "P2P 直连",
-    relay: "服务端中转"
+    relay: "服务端中转",
+    failed: "P2P 失败，未中转"
   }[status];
 }
 </script>

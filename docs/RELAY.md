@@ -47,11 +47,24 @@ docker compose up -d --pull always
 
 账号、Token、设备、会话和事件保存在 MySQL volume `mysql_data`，服务端中转的图片文件保存在 Docker volume `data`。P2P 模式下图片直接写入 agent 的本地 `data-remote-agent/uploads`，不会经过 relay。新数据库从空数据开始，不会导入旧的 `relay-store.json`。服务端不保存本机 Codex/CCS/API Key。
 
-## P2P 与回退
+## P2P、STUN 与回退
 
 网页选择在线设备后，会通过已登录网页会话连接 `/api/p2p/ws`，relay 只转发 SDP/ICE 信令。浏览器和 agent 建立 WebRTC DataChannel 后，线程、会话命令、事件和图片分块上传都走直连；页面状态栏显示“P2P 直连”。如果浏览器不支持 WebRTC、UDP 打洞失败、STUN 不可达或 DataChannel 中断，页面状态会显示“服务端中转”，自动恢复原来的 HTTP/SSE/WebSocket 路径。
 
-默认 STUN 是 `stun:stun.l.google.com:19302`。可在 relay 环境中用 `WEBRTC_STUN_SERVERS` 配置逗号分隔的 STUN 地址；运行 agent 的电脑也应设置同样的值。项目没有配置 TURN，无法打洞的网络会依赖服务端回退。
+relay 自带一个 STUN-only UDP 监听器，默认容器端口为 `3478`，Compose 默认映射为宿主机 UDP `3478`。它只响应 STUN Binding 请求，返回请求方的公网映射地址，不接收、转发或中继 WebRTC DataChannel 数据，因此这个端口不会产生 TURN 中转流量。公网防火墙需要同时放行网页 TCP 端口和该 UDP 端口。
+
+可以在 `.env` 中手动设置映射端口和公网地址：
+
+```env
+WEBRTC_STUN_PORT=3478
+WEBRTC_STUN_PUBLIC_PORT=3478
+WEBRTC_STUN_PUBLIC_HOST=relay.example.com
+WEBRTC_P2P_ONLY=false
+```
+
+`WEBRTC_STUN_PUBLIC_PORT` 是宿主机映射端口，`WEBRTC_STUN_PORT` 是容器内监听端口；两者不同时 Compose 会按这两个值生成 UDP 映射。`WEBRTC_STUN_PUBLIC_HOST` 留空时，relay 会从网页请求的 Host 自动生成候选地址。也可以用 `WEBRTC_STUN_SERVERS` 配置逗号分隔的外部 STUN 地址，relay 会将内置 STUN 地址和外部地址一起下发给浏览器，浏览器再把同一组地址放入 offer，agent 不需要另行同步环境变量。
+
+默认 `WEBRTC_P2P_ONLY=false`，打洞失败时仍兼容服务端 HTTP/SSE/WebSocket 回退。设置为 `true` 后，业务请求、事件流、图片上传以及 agent 的事件/会话通知在 P2P 未建立或中断时直接失败或丢弃，绝不回退到服务端中转；网页登录、设备发现和 P2P 信令仍需要通过 relay 完成。项目没有配置 TURN，无法打洞的网络在该模式下不可用。
 
 ## 构建客户端
 

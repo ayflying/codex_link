@@ -31,10 +31,15 @@ services:
       WEB_DIR: /app/web
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
       WEBRTC_STUN_SERVERS: ${WEBRTC_STUN_SERVERS:-stun:stun.l.google.com:19302}
+      WEBRTC_STUN_PORT: ${WEBRTC_STUN_PORT:-3478}
+      WEBRTC_STUN_PUBLIC_PORT: ${WEBRTC_STUN_PUBLIC_PORT:-3478}
+      WEBRTC_STUN_PUBLIC_HOST: ${WEBRTC_STUN_PUBLIC_HOST:-}
+      WEBRTC_P2P_ONLY: ${WEBRTC_P2P_ONLY:-false}
     volumes:
       - data:/data
     ports:
       - "18787:8787"
+      - "${WEBRTC_STUN_PUBLIC_PORT:-3478}:${WEBRTC_STUN_PORT:-3478}/udp"
     restart: unless-stopped
 
 volumes:

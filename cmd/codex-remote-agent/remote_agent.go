@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -42,6 +43,7 @@ type remoteAgent struct {
 	conn     *websocket.Conn
 	p2pMu    sync.Mutex
 	p2pPeers map[string]*p2pPeer
+	p2pOnly  atomic.Bool
 }
 
 func isRemoteAgentMode() bool {
@@ -186,6 +188,14 @@ func (a *remoteAgent) connectAndServe() error {
 		a.write.Unlock()
 		_ = conn.Close()
 	}()
+	_, raw, err := conn.ReadMessage()
+	if err != nil {
+		return err
+	}
+	var connected remoteEnvelope
+	if json.Unmarshal(raw, &connected) == nil && connected.Type == "connected" {
+		a.updateServerMode(connected)
+	}
 
 	a.send("hello", "", "", map[string]interface{}{
 		"deviceId":   a.config.DeviceID,
@@ -207,9 +217,20 @@ func (a *remoteAgent) connectAndServe() error {
 		}
 		if message.Type == "command" {
 			go a.handleCommand(message)
+		} else if message.Type == "connected" {
+			a.updateServerMode(message)
 		} else if message.Type == "p2p.signal" || message.Type == "p2p.close" {
 			a.handleP2PMessage(message)
 		}
+	}
+}
+
+func (a *remoteAgent) updateServerMode(message remoteEnvelope) {
+	var payload struct {
+		P2POnly bool `json:"p2pOnly"`
+	}
+	if json.Unmarshal(message.Payload, &payload) == nil {
+		a.p2pOnly.Store(payload.P2POnly)
 	}
 }
 
@@ -355,8 +376,11 @@ func (a *remoteAgent) send(kind, requestID, action string, payload interface{}, 
 	if len(messageError) > 0 {
 		message.Error = messageError[0]
 	}
-	if message.Type == "event" {
+	if message.Type == "event" || message.Type == "session" {
 		if a.sendP2P(message) {
+			return
+		}
+		if a.p2pOnly.Load() {
 			return
 		}
 	}
