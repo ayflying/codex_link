@@ -53,14 +53,13 @@ docker compose up -d --pull always
 .\scripts\install-git-hooks.ps1
 ```
 
-Git hook 会在每次提交前自动递增修订号，例如 `0.2.3` 到 `0.2.4`。发布 relay 镜像时，脚本会在 `root@192.168.50.217` 远程构建，并同时推送版本标签和 `latest` 标签：
+Git hook 会在每次提交前自动递增修订号，例如 `0.2.3` 到 `0.2.4`；提交完成后还会自动在 `root@192.168.50.217` 构建并推送版本标签和 `latest` 标签：
 
 ```powershell
-$env:CODEX_LINK_GHCR_TOKEN = "GHCR_TOKEN"
 .\scripts\publish-relay.ps1
 ```
 
-不要将 GHCR Token 写入仓库。Compose 默认使用 `latest`；需要回滚或跳转版本时，把镜像改为 `ghcr.io/ayflying/codex_link:0.2.3` 等具体标签后重新部署。
+脚本默认使用 217 上已有的 Docker/GHCR 登录状态；如需临时登录，可通过 `CODEX_LINK_GHCR_TOKEN` 传入，但不要将 Token 写入仓库。Compose 默认使用 `latest`；需要回滚或跳转版本时，把镜像改为 `ghcr.io/ayflying/codex_link:0.2.3` 等具体标签后重新部署。设置 `CODEX_LINK_SKIP_IMAGE_PUBLISH=1` 可跳过某次自动发布。
 
 账号、Token、设备、会话和事件保存在 MySQL volume `mysql_data`，服务端中转的图片文件保存在 Docker volume `data`。P2P 模式下图片直接写入 agent 的本地 `data-remote-agent/uploads`，不会经过 relay。新数据库从空数据开始，不会导入旧的 `relay-store.json`。服务端不保存本机 Codex/CCS/API Key。
 

@@ -43,14 +43,13 @@ http://<服务端地址>:18787
 .\scripts\install-git-hooks.ps1
 ```
 
-初始基线版本为 `0.2.3`，之后每次提交会自动递增修订号。镜像发布必须使用远程服务器 `root@192.168.50.217` 构建，并同时推送版本标签和 `latest` 标签。GHCR Token 只通过环境变量传给脚本，不要写入文件：
+初始基线版本为 `0.2.3`，之后每次提交会自动递增修订号；提交完成后还会自动在 `root@192.168.50.217` 构建并推送版本标签和 `latest` 标签。首次手动发布或补发镜像时执行：
 
 ```powershell
-$env:CODEX_LINK_GHCR_TOKEN = "GHCR_TOKEN"
 .\scripts\publish-relay.ps1
 ```
 
-脚本会推送 `ghcr.io/ayflying/codex_link:<VERSION>` 和 `ghcr.io/ayflying/codex_link:latest`。Compose 默认使用 `latest`；需要固定或跳转版本时，将 `docker-compose.yml` 中的镜像标签改为对应版本号。
+脚本默认使用 217 上已有的 Docker/GHCR 登录状态；也可以通过 `CODEX_LINK_GHCR_TOKEN` 临时登录 217。脚本会推送 `ghcr.io/ayflying/codex_link:<VERSION>` 和 `ghcr.io/ayflying/codex_link:latest`。Compose 默认使用 `latest`；需要固定或跳转版本时，将 `docker-compose.yml` 中的镜像标签改为对应版本号。临时不发布镜像时设置 `CODEX_LINK_SKIP_IMAGE_PUBLISH=1`。
 
 MySQL 只通过 Compose 内部网络提供给 relay，不对外暴露端口。首次注册完成后，建议在 `.env` 中设置 `ALLOW_REGISTRATION=false`，再执行一次：
 

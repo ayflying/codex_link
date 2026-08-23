@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+if [ "${CODEX_LINK_SKIP_IMAGE_PUBLISH:-0}" = "1" ]; then
+  printf '%s\n' '已跳过自动镜像发布（CODEX_LINK_SKIP_IMAGE_PUBLISH=1）'
+  exit 0
+fi
+
+root=$(git rev-parse --show-toplevel)
+if command -v pwsh >/dev/null 2>&1; then
+  pwsh -NoProfile -File "$root/scripts/publish-relay.ps1"
+elif command -v powershell >/dev/null 2>&1; then
+  powershell -NoProfile -File "$root/scripts/publish-relay.ps1"
+else
+  printf '%s\n' '未找到 PowerShell，无法自动发布 relay 镜像' >&2
+  exit 1
+fi

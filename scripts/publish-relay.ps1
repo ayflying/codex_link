@@ -33,28 +33,27 @@ $sources = @(
 )
 & scp -r @sources $remoteTarget
 
-if (-not $SkipPush -and [string]::IsNullOrWhiteSpace($GhcrToken)) {
-  throw "请先设置 CODEX_LINK_GHCR_TOKEN，或使用 -SkipPush 只验证远程构建"
-}
-
+$hasGhcrToken = -not [string]::IsNullOrWhiteSpace($GhcrToken)
 $remoteScript = @"
 set -eu
 remote_dir='$RemoteDir'
-docker_config="`$remote_dir/.docker"
+docker_config=''
+if [ '$hasGhcrToken' = 'True' ]; then
+  docker_config="`$remote_dir/.docker"
+  export DOCKER_CONFIG="`$docker_config"
+fi
 cleanup() {
-  DOCKER_CONFIG="`$docker_config" docker logout ghcr.io >/dev/null 2>&1 || true
+  if [ -n "`$docker_config" ]; then
+    docker logout ghcr.io >/dev/null 2>&1 || true
+  fi
   rm -rf "`$remote_dir"
 }
 trap cleanup EXIT
-mkdir -p "`$docker_config"
 cd "`$remote_dir"
-if [ '$SkipPush' != 'True' ]; then
-  DOCKER_CONFIG="`$docker_config" docker login ghcr.io --username '$GhcrUser' --password-stdin
-fi
 docker build --build-arg CODEX_LINK_VERSION='$version' --label org.opencontainers.image.revision='$revision' -t '$Image`:$version' -t '$Image`:latest' -f Dockerfile.relay .
 if [ '$SkipPush' != 'True' ]; then
-  DOCKER_CONFIG="`$docker_config" docker push '$Image`:$version'
-  DOCKER_CONFIG="`$docker_config" docker push '$Image`:latest'
+  docker push '$Image`:$version'
+  docker push '$Image`:latest'
 fi
 docker image inspect '$Image`:$version' --format 'built image: {{.Id}}'
 printf '%s\n' '镜像构建完成: $Image`:$version 和 $Image`:latest'
@@ -62,9 +61,12 @@ printf '%s\n' '镜像构建完成: $Image`:$version 和 $Image`:latest'
 
 if ($SkipPush) {
   $remoteScript | & ssh $Remote bash
-} else {
+} elseif ($hasGhcrToken) {
+  & ssh $Remote "mkdir -p '$RemoteDir/.docker'"
   $GhcrToken | & ssh $Remote "DOCKER_CONFIG='$RemoteDir/.docker' docker login ghcr.io --username '$GhcrUser' --password-stdin"
   if ($LASTEXITCODE -ne 0) { throw "远程 GHCR 登录失败" }
+  $remoteScript | & ssh $Remote bash
+} else {
   $remoteScript | & ssh $Remote bash
 }
 if ($LASTEXITCODE -ne 0) { throw "远程镜像构建或推送失败" }
