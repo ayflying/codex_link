@@ -213,7 +213,9 @@ func (a *remoteAgent) connectAndServe() error {
 	}
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+a.config.Token)
-	conn, response, err := websocket.DefaultDialer.Dial(endpoint, headers)
+	dialer := *websocket.DefaultDialer
+	dialer.HandshakeTimeout = remoteHTTPTimeout
+	conn, response, err := dialer.Dial(endpoint, headers)
 	if err != nil {
 		if response != nil {
 			if response.StatusCode == http.StatusUnauthorized {
