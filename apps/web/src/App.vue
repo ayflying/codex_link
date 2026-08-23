@@ -943,18 +943,51 @@ function transportLabel(status: typeof transportState.value) {
 <template>
   <main v-if="!authChecked" class="auth-shell">
     <section class="auth-panel">
-      <p class="eyebrow">Codex Remote</p>
-      <h1>正在连接</h1>
+      <div class="brand-lockup">
+        <span class="brand-mark" aria-hidden="true"><i /><i /><i /></span>
+        <span class="brand-copy"><strong>CODEX LINK</strong><small>REMOTE WORKSPACE</small></span>
+      </div>
+      <div class="auth-loading">
+        <span class="loading-line" />
+        <h1>正在连接</h1>
+      </div>
     </section>
   </main>
 
   <main v-else-if="!auth.authenticated" class="auth-shell">
+    <section class="auth-intro">
+      <div class="brand-lockup">
+        <span class="brand-mark" aria-hidden="true"><i /><i /><i /></span>
+        <span class="brand-copy"><strong>CODEX LINK</strong><small>REMOTE WORKSPACE</small></span>
+      </div>
+      <div class="auth-intro-copy">
+        <p class="auth-kicker"><span class="signal-dot" /> SECURE CONTROL SURFACE</p>
+        <h2>把 Codex 带到<br /><em>你的屏幕上。</em></h2>
+        <p>连接本机客户端，继续处理远程工作区里的每一段会话。</p>
+      </div>
+      <div class="auth-intro-meta">
+        <span><strong>01</strong><small>账号登录</small></span>
+        <span><strong>02</strong><small>选择设备</small></span>
+        <span><strong>03</strong><small>开始工作</small></span>
+      </div>
+    </section>
     <form class="auth-panel" @submit.prevent="submitLogin">
-      <p class="eyebrow">Codex Remote</p>
-      <h1>{{ registerMode ? "创建服务端账号" : "登录控制台" }}</h1>
+      <div class="auth-panel-heading">
+        <span class="panel-index">01</span>
+        <div>
+          <p class="eyebrow">Account access</p>
+          <h1>{{ registerMode ? "创建服务端账号" : "登录控制台" }}</h1>
+        </div>
+      </div>
       <p class="auth-note">网页与本机客户端使用同一个服务端账号，连接后会自动同步。</p>
-      <input v-model="authUsername" type="text" autocomplete="username" placeholder="用户名" autofocus />
-      <input v-model="loginPassword" type="password" autocomplete="current-password" placeholder="密码" />
+      <label class="field-label">
+        <span>用户名</span>
+        <input v-model="authUsername" type="text" autocomplete="username" placeholder="输入用户名" autofocus />
+      </label>
+      <label class="field-label">
+        <span>密码</span>
+        <input v-model="loginPassword" type="password" autocomplete="current-password" placeholder="输入密码" />
+      </label>
       <button class="primary icon-text" type="submit" :disabled="loading">
         <KeyRound :size="18" />
         <span>{{ registerMode ? "注册并登录" : "登录" }}</span>
@@ -972,9 +1005,13 @@ function transportLabel(status: typeof transportState.value) {
         <button v-if="activeDeviceId" class="icon-button compact" type="button" title="返回设备列表" @click="backToDevices">
           <ArrowLeft :size="18" />
         </button>
-        <div>
-        <p class="eyebrow">Codex Remote</p>
-        <h1>{{ activeDevice ? `${activeDevice.name} 控制台` : "选择设备" }}</h1>
+        <div class="brand-lockup app-brand">
+          <span class="brand-mark" aria-hidden="true"><i /><i /><i /></span>
+          <span class="brand-copy"><strong>CODEX LINK</strong><small>REMOTE WORKSPACE</small></span>
+        </div>
+        <div class="topbar-heading">
+          <p class="eyebrow">{{ activeDevice ? "Connected workspace" : "Device directory" }}</p>
+          <h1>{{ activeDevice ? `${activeDevice.name} 控制台` : "选择设备" }}</h1>
         </div>
       </div>
       <div class="top-actions">

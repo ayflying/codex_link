@@ -1,5 +1,5 @@
 param(
-  [string]$Remote = "root@192.168.50.217",
+  [string]$Remote = $env:CODEX_LINK_BUILD_SERVER,
   [string]$RemoteDir = "/tmp/codex-link-image-build",
   [string]$Image = "ghcr.io/ayflying/codex_link",
   [string]$GhcrUser = "ayflying",
@@ -8,6 +8,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ([string]::IsNullOrWhiteSpace($Remote)) {
+  throw "请通过 -Remote 或 CODEX_LINK_BUILD_SERVER 指定远程构建服务器"
+}
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $versionPath = Join-Path $root "VERSION"
 $version = (Get-Content -LiteralPath $versionPath -Raw).Trim()

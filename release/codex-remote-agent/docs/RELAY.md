@@ -61,10 +61,17 @@ docker compose up -d --pull always
 .\scripts\package-remote.ps1
 ```
 
-该脚本会连接 `root@192.168.50.217` 进行交叉编译，生成：
+该脚本会连接通过 `-Remote` 或 `CODEX_LINK_BUILD_SERVER` 指定的远程服务器进行交叉编译，生成：
 
 ```text
 release\codex-remote-agent\codex-remote-agent.exe
+```
+
+例如：
+
+```powershell
+$env:CODEX_LINK_BUILD_SERVER = "root@your-build-host"
+.\scripts\package-remote.ps1
 ```
 
 把整个 `release\codex-remote-agent` 目录复制到安装 Codex 的 Windows 电脑。

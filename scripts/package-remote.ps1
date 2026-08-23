@@ -1,9 +1,12 @@
 param(
-  [string]$Remote = "root@192.168.50.217",
+  [string]$Remote = $env:CODEX_LINK_BUILD_SERVER,
   [string]$RemoteDir = "/tmp/codex-remote-src"
 )
 
 $ErrorActionPreference = "Stop"
+if ([string]::IsNullOrWhiteSpace($Remote)) {
+  throw "请通过 -Remote 或 CODEX_LINK_BUILD_SERVER 指定远程构建服务器"
+}
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $release = Join-Path $root "release\codex-remote-agent"
 $remoteOutput = "$RemoteDir-output"

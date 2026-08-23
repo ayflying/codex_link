@@ -6,6 +6,7 @@ dist/
 data/
 data-local/
 **/data-dev/
+**/data-remote-agent/
 *.log
 
 # Local Go build and end-to-end test artifacts.

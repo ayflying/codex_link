@@ -9,7 +9,7 @@
 
 ## 构建与部署
 
-- 需要编译 Go 客户端、服务端或容器镜像时，使用 `root@192.168.50.217` 远程服务器。
+- 需要编译 Go 客户端、服务端或容器镜像时，使用通过脚本参数或环境变量配置的远程服务器。
 - 中心服务端使用 `docker-compose.yml` 中的 GHCR 镜像 `ghcr.io/ayflying/codex_link:latest` 部署。
 - 部署前使用 `docker compose up -d --pull always` 拉取最新镜像。
 - 中心服务端宿主机访问端口为 `18787`，容器内部服务端口为 `8787`。
