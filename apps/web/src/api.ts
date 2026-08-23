@@ -70,6 +70,9 @@ export type Attachment = {
   mimeType?: string;
   path?: string;
   url?: string;
+  dataUrl?: string;
+  previewUrl?: string;
+  transport?: "relay" | "p2p";
 };
 
 export async function getAuthStatus() {

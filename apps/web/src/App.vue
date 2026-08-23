@@ -50,6 +50,7 @@ import {
   type RemoteEvent,
   type SessionRecord
 } from "./api";
+import { P2PRemoteError, P2PTransport } from "./p2p";
 
 const auth = ref<AuthStatus>({ authenticated: false, registrationOpen: true });
 const authChecked = ref(false);
@@ -77,11 +78,22 @@ const error = ref("");
 const loading = ref(false);
 const eventSource = ref<EventSource | null>(null);
 const streamState = ref<"idle" | "connected" | "reconnecting">("idle");
+const transportState = ref<"idle" | "connecting" | "p2p" | "relay">("idle");
 const transcriptEl = ref<HTMLElement | null>(null);
 const renderLimit = ref(160);
 const forceScrollToBottom = ref(false);
 const sidebarOpen = ref(false);
 const collapsedProjects = ref<Set<string>>(new Set());
+const pendingRemoteEvents = new Map<string, RemoteEvent>();
+
+const p2p = new P2PTransport({
+  onEvent: (event) => acceptRemoteEvent(event),
+  onSession: (session) => upsertSession(session),
+  onClosed: () => {
+    transportState.value = "relay";
+    if (activeSessionId.value) connectEvents(activeSessionId.value);
+  }
+});
 
 const activeSession = computed(() => sessions.value.find((session) => session.id === activeSessionId.value));
 const activeDevice = computed(() => devices.value.find((device) => device.id === activeDeviceId.value));
@@ -180,7 +192,15 @@ async function refresh() {
       backToDevices();
       return;
     }
-    const [sessionResult, settingsResult] = await Promise.all([getThreads(activeDeviceId.value), getSettings(activeDeviceId.value)]);
+    const direct = await connectP2P(activeDeviceId.value);
+    const [sessionResult, settingsResult] = await Promise.all([
+      direct
+        ? p2p.request<{ sessions: SessionRecord[] }>("threads.list", {})
+        : getThreads(activeDeviceId.value),
+      direct
+        ? p2p.request<AppSettings>("settings.get", {})
+        : getSettings(activeDeviceId.value)
+    ]);
     sessions.value = sessionResult.sessions;
     settings.value = settingsResult;
     collapseProjectsByDefault();
@@ -238,6 +258,7 @@ async function savePassword() {
 }
 
 async function signOut() {
+  p2p.close(false);
   await logout();
   auth.value = await getAuthStatus();
   activeSessionId.value = "";
@@ -259,6 +280,7 @@ async function selectDevice(device: RemoteDevice) {
 }
 
 function backToDevices() {
+  p2p.close(false);
   eventSource.value?.close();
   eventSource.value = null;
   activeDeviceId.value = "";
@@ -266,6 +288,23 @@ function backToDevices() {
   events.value = [];
   sessions.value = [];
   streamState.value = "idle";
+  transportState.value = "idle";
+}
+
+async function connectP2P(deviceId: string) {
+  if (p2p.isConnected() && p2p.deviceId === deviceId) {
+    transportState.value = "p2p";
+    return true;
+  }
+  transportState.value = "connecting";
+  try {
+    await p2p.connect(deviceId);
+    transportState.value = "p2p";
+    return true;
+  } catch {
+    transportState.value = "relay";
+    return false;
+  }
 }
 
 async function createAccessToken() {
@@ -319,6 +358,17 @@ async function refreshTokens() {
   tokens.value = result.tokens;
 }
 
+async function commandWithFallback<T>(action: string, payload: unknown, fallback: () => Promise<T>) {
+  if (!p2p.isConnected()) return fallback();
+  try {
+    return await p2p.request<T>(action, payload);
+  } catch (reason) {
+    if (reason instanceof P2PRemoteError) throw reason;
+    p2p.close(true);
+    return fallback();
+  }
+}
+
 async function copyToken(token: string) {
   try {
     await navigator.clipboard.writeText(token);
@@ -332,7 +382,12 @@ async function startSession() {
   loading.value = true;
   error.value = "";
   try {
-    const { session } = await createSession(firstPrompt.value.trim() || undefined, activeDeviceId.value);
+    const prompt = firstPrompt.value.trim() || undefined;
+    const { session } = await commandWithFallback(
+      "sessions.create",
+      { prompt },
+      () => createSession(prompt, activeDeviceId.value)
+    );
     upsertSession(session);
     activeSessionId.value = session.id;
     firstPrompt.value = "";
@@ -349,7 +404,11 @@ async function openThread(session: SessionRecord) {
   loading.value = true;
   error.value = "";
   try {
-    const { session: resumed } = await resumeThread(session.id);
+    const { session: resumed } = await commandWithFallback(
+      "threads.resume",
+      { id: session.id },
+      () => resumeThread(session.id)
+    );
     upsertSession(resumed);
     forceScrollToBottom.value = true;
     activeSessionId.value = resumed.id;
@@ -368,7 +427,11 @@ async function removeThread(session: SessionRecord) {
   loading.value = true;
   error.value = "";
   try {
-    await deleteThread(session.id);
+    await commandWithFallback(
+      "threads.archive",
+      { id: session.id },
+      () => deleteThread(session.id)
+    );
     sessions.value = sessions.value.filter((item) => item.id !== session.id);
     if (activeSessionId.value === session.id) {
       activeSessionId.value = "";
@@ -386,7 +449,17 @@ async function submitMessage() {
   loading.value = true;
   error.value = "";
   try {
-    await sendMessage(activeSession.value.id, draft.value.trim(), attachments.value);
+    const messageAttachments = attachments.value;
+    if (p2p.isConnected() && messageAttachments.every((attachment) => attachment.transport === "p2p" && Boolean(attachment.path))) {
+      const directAttachments = messageAttachments.map(({ dataUrl: _dataUrl, previewUrl: _previewUrl, transport: _transport, ...attachment }) => attachment);
+      await commandWithFallback(
+        "sessions.message",
+        { id: activeSession.value.id, text: draft.value.trim(), attachments: directAttachments },
+        async () => sendMessage(activeSession.value!.id, draft.value.trim(), await relayAttachments(messageAttachments))
+      );
+    } else {
+      await sendMessage(activeSession.value.id, draft.value.trim(), await relayAttachments(messageAttachments));
+    }
     draft.value = "";
     attachments.value = [];
   } catch (reason) {
@@ -400,7 +473,11 @@ async function saveSettings(next: Partial<AppSettings>) {
   const previous = settings.value;
   settings.value = { ...settings.value, ...next };
   try {
-    settings.value = await updateSettings(settings.value, activeDeviceId.value);
+    settings.value = await commandWithFallback(
+      "settings.update",
+      settings.value,
+      () => updateSettings(settings.value, activeDeviceId.value)
+    );
   } catch (reason) {
     settings.value = previous;
     error.value = reason instanceof Error ? reason.message : String(reason);
@@ -434,8 +511,32 @@ async function handleFilePicked(event: Event) {
 async function addImageFile(file: File) {
   if (!file.type.startsWith("image/")) return;
   const dataUrl = await fileToDataURL(file);
-  const { attachment } = await uploadImage(file.name || `image-${Date.now()}.png`, file.type, dataUrl);
-  attachments.value.push(attachment);
+  const name = file.name || `image-${Date.now()}.png`;
+  if (p2p.isConnected()) {
+    try {
+      const attachment = await p2p.uploadAttachment(name, file.type, dataUrl);
+      attachments.value.push({ ...attachment, dataUrl, previewUrl: dataUrl, transport: "p2p" });
+      return;
+    } catch {
+      p2p.close(true);
+    }
+  }
+  const { attachment } = await uploadImage(name, file.type, dataUrl);
+  attachments.value.push({ ...attachment, transport: "relay" });
+}
+
+async function relayAttachments(source: Attachment[]) {
+  const result: Attachment[] = [];
+  for (const attachment of source) {
+    if (attachment.transport !== "p2p") {
+      result.push(attachment);
+      continue;
+    }
+    if (!attachment.dataUrl) throw new Error("P2P 图片无法回退到服务端，请重新选择图片");
+    const uploaded = await uploadImage(attachment.name || `image-${Date.now()}.png`, attachment.mimeType || "image/png", attachment.dataUrl);
+    result.push({ ...uploaded.attachment, transport: "relay" });
+  }
+  return result;
 }
 
 function removeAttachment(index: number) {
@@ -454,20 +555,37 @@ function fileToDataURL(file: File) {
 async function approve(event: RemoteEvent, decision: "approved" | "rejected") {
   if (!activeSession.value) return;
   const approvalId = String(event.payload.approvalId || event.id);
-  await sendApproval(activeSession.value.id, approvalId, decision);
+  await commandWithFallback(
+    "sessions.approval",
+    { id: activeSession.value.id, approvalId, decision },
+    () => sendApproval(activeSession.value!.id, approvalId, decision)
+  );
 }
 
 async function cancel() {
   if (!activeSession.value) return;
-  await cancelTurn(activeSession.value.id);
+  await commandWithFallback(
+    "sessions.cancel",
+    { id: activeSession.value.id },
+    () => cancelTurn(activeSession.value!.id)
+  );
 }
 
-function connectEvents(sessionId: string) {
+function connectEvents(sessionId: string, reset = true) {
   eventSource.value?.close();
-  events.value = [];
-  renderLimit.value = 160;
-  forceScrollToBottom.value = true;
+  if (reset) {
+    events.value = [];
+    renderLimit.value = 160;
+    forceScrollToBottom.value = true;
+  }
   if (!sessionId) return;
+
+  drainPendingEvents(sessionId);
+
+  if (p2p.isConnected()) {
+    streamState.value = "connected";
+    return;
+  }
 
   streamState.value = "reconnecting";
   const source = new EventSource(`/api/sessions/${sessionId}/events`);
@@ -494,18 +612,39 @@ function connectEvents(sessionId: string) {
   for (const type of types) {
     source.addEventListener(type, (message) => {
       const event = JSON.parse((message as MessageEvent).data) as RemoteEvent;
-      if (!events.value.some((item) => item.id === event.id)) events.value.push(event);
-      if (events.value.length > 500) events.value = events.value.slice(-500);
-      if (event.type === "session.status" && activeSession.value) {
-        upsertSession({
-          ...activeSession.value,
-          status: String(event.payload.status || activeSession.value.status),
-          mode: String(event.payload.mode || activeSession.value.mode) as SessionRecord["mode"],
-          updatedAt: event.ts
-        });
-      }
+      acceptRemoteEvent(event);
     });
   }
+}
+
+function acceptRemoteEvent(event: RemoteEvent) {
+  if (event.sessionId !== activeSessionId.value) {
+    pendingRemoteEvents.set(eventKey(event), event);
+    if (pendingRemoteEvents.size > 500) pendingRemoteEvents.delete(pendingRemoteEvents.keys().next().value || "");
+    return;
+  }
+  if (!events.value.some((item) => eventKey(item) === eventKey(event))) events.value.push(event);
+  if (events.value.length > 500) events.value = events.value.slice(-500);
+  if (event.type === "session.status" && activeSession.value) {
+    upsertSession({
+      ...activeSession.value,
+      status: String(event.payload.status || activeSession.value.status),
+      mode: String(event.payload.mode || activeSession.value.mode) as SessionRecord["mode"],
+      updatedAt: event.ts
+    });
+  }
+}
+
+function drainPendingEvents(sessionId: string) {
+  for (const [key, event] of pendingRemoteEvents) {
+    if (event.sessionId !== sessionId) continue;
+    pendingRemoteEvents.delete(key);
+    acceptRemoteEvent(event);
+  }
+}
+
+function eventKey(event: RemoteEvent) {
+  return `${event.sessionId}:${event.type}:${event.ts}:${JSON.stringify(event.payload)}`;
 }
 
 function upsertSession(session: SessionRecord) {
@@ -758,6 +897,15 @@ function streamLabel(status: typeof streamState.value) {
     reconnecting: "重连中"
   }[status];
 }
+
+function transportLabel(status: typeof transportState.value) {
+  return {
+    idle: "未连接",
+    connecting: "P2P 协商中",
+    p2p: "P2P 直连",
+    relay: "服务端中转"
+  }[status];
+}
 </script>
 
 <template>
@@ -979,7 +1127,7 @@ function streamLabel(status: typeof streamState.value) {
           </div>
           <div class="status-item">
             <ShieldCheck :size="17" />
-            <span>{{ streamLabel(streamState) }}</span>
+            <span>{{ transportLabel(transportState) }}</span>
           </div>
           <div class="status-item current-device">
             <Cpu :size="16" />
@@ -1052,7 +1200,7 @@ function streamLabel(status: typeof streamState.value) {
         <form class="composer" @submit.prevent="submitMessage">
           <div v-if="attachments.length" class="attachment-strip">
             <figure v-for="(attachment, index) in attachments" :key="attachment.id || attachment.path || index">
-              <img v-if="attachment.url" :src="attachment.url" :alt="attachment.name || '图片附件'" />
+              <img v-if="attachment.url || attachment.previewUrl" :src="attachment.url || attachment.previewUrl" :alt="attachment.name || '图片附件'" />
               <figcaption>{{ attachment.name || "图片" }}</figcaption>
               <button type="button" title="移除图片" @click="removeAttachment(index)">
                 <X :size="14" />

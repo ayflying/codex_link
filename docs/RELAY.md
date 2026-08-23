@@ -1,9 +1,10 @@
 # Codex Remote 中心服务 / 本机客户端
 
-中心服务端使用 Docker Compose 部署，MySQL 保存账号、Token、设备、会话和事件，`data` 卷保存图片文件。运行 Codex 的电脑只运行轻量客户端 agent；它主动通过 WebSocket 连接服务端，因此客户端不开放 HTTP 端口，也不需要远程桌面。
+中心服务端使用 Docker Compose 部署，MySQL 保存账号、Token、设备、会话和事件，`data` 卷保存服务端中转模式的图片文件。运行 Codex 的电脑只运行轻量客户端 agent；它主动通过 WebSocket 连接服务端，因此客户端不开放 HTTP 端口，也不需要远程桌面。
 
 ```text
-手机或浏览器 <-> 中心服务端（网页 / API / SSE） <-> WebSocket <-> 本机 agent <-> 本机 Codex
+手机浏览器 <-> 中心服务端（网页 / API / SSE） <-> WebSocket <-> 本机 agent <-> 本机 Codex
+     \_____________________ WebRTC DataChannel _____________________/
 ```
 
 ## 部署服务端
@@ -44,7 +45,13 @@ ALLOW_REGISTRATION=false
 docker compose up -d --pull always
 ```
 
-账号、Token、设备、会话和事件保存在 MySQL volume `mysql_data`，图片文件保存在 Docker volume `data`。新数据库从空数据开始，不会导入旧的 `relay-store.json`。服务端不保存本机 Codex/CCS/API Key。
+账号、Token、设备、会话和事件保存在 MySQL volume `mysql_data`，服务端中转的图片文件保存在 Docker volume `data`。P2P 模式下图片直接写入 agent 的本地 `data-remote-agent/uploads`，不会经过 relay。新数据库从空数据开始，不会导入旧的 `relay-store.json`。服务端不保存本机 Codex/CCS/API Key。
+
+## P2P 与回退
+
+网页选择在线设备后，会通过已登录网页会话连接 `/api/p2p/ws`，relay 只转发 SDP/ICE 信令。浏览器和 agent 建立 WebRTC DataChannel 后，线程、会话命令、事件和图片分块上传都走直连；页面状态栏显示“P2P 直连”。如果浏览器不支持 WebRTC、UDP 打洞失败、STUN 不可达或 DataChannel 中断，页面状态会显示“服务端中转”，自动恢复原来的 HTTP/SSE/WebSocket 路径。
+
+默认 STUN 是 `stun:stun.l.google.com:19302`。可在 relay 环境中用 `WEBRTC_STUN_SERVERS` 配置逗号分隔的 STUN 地址；运行 agent 的电脑也应设置同样的值。项目没有配置 TURN，无法打洞的网络会依赖服务端回退。
 
 ## 构建客户端
 

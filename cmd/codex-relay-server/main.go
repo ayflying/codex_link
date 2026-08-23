@@ -576,11 +576,13 @@ func (s *sessionTokens) remove(token string) {
 }
 
 type relayServer struct {
-	store    *mysqlRelayStore
-	webDir   string
-	mu       sync.Mutex
-	agents   map[string]*agentPeer
-	upgrader websocket.Upgrader
+	store       *mysqlRelayStore
+	webDir      string
+	mu          sync.Mutex
+	agents      map[string]*agentPeer
+	p2pBrowsers map[string]*p2pBrowser
+	iceServers  []string
+	upgrader    websocket.Upgrader
 }
 
 type agentPeer struct {
@@ -594,15 +596,26 @@ type agentPeer struct {
 	mu       sync.Mutex
 }
 
+type p2pBrowser struct {
+	server   *relayServer
+	userID   string
+	deviceID string
+	clientID string
+	conn     *websocket.Conn
+	write    sync.Mutex
+}
+
 func newRelayServer(uploadDir, webDir string) (*relayServer, error) {
 	store, err := newMySQLRelayStore(uploadDir)
 	if err != nil {
 		return nil, err
 	}
 	return &relayServer{
-		store:  store,
-		webDir: webDir,
-		agents: map[string]*agentPeer{},
+		store:       store,
+		webDir:      webDir,
+		agents:      map[string]*agentPeer{},
+		p2pBrowsers: map[string]*p2pBrowser{},
+		iceServers:  splitList(env("WEBRTC_STUN_SERVERS", "stun:stun.l.google.com:19302")),
 		upgrader: websocket.Upgrader{CheckOrigin: func(request *http.Request) bool {
 			origin := request.Header.Get("Origin")
 			return origin == "" || sameOrigin(request, origin)
@@ -633,6 +646,7 @@ func main() {
 	mux.HandleFunc("/api/agent/login", server.agentLogin)
 	mux.HandleFunc("/api/agent/validate", server.agentValidate)
 	mux.HandleFunc("/api/agent/ws", server.agentWebSocket)
+	mux.HandleFunc("/api/p2p/ws", server.p2pWebSocket)
 	mux.HandleFunc("/api/openapi.json", server.openapi)
 	mux.HandleFunc("/api/health", server.health)
 	mux.HandleFunc("/api/devices", server.devices)
@@ -940,6 +954,45 @@ func (s *relayServer) agentWebSocket(w http.ResponseWriter, request *http.Reques
 	}
 }
 
+func (s *relayServer) p2pWebSocket(w http.ResponseWriter, request *http.Request) {
+	user, ok := s.userFromRequest(request)
+	if !ok {
+		writeErrorStatus(w, http.StatusUnauthorized, "请先登录")
+		return
+	}
+	deviceID := strings.TrimSpace(request.URL.Query().Get("deviceId"))
+	clientID := strings.TrimSpace(request.URL.Query().Get("clientId"))
+	if deviceID == "" || clientID == "" || !s.deviceOwnedBy(user.ID, deviceID) {
+		writeErrorStatus(w, http.StatusBadRequest, "设备或 P2P 客户端标识无效")
+		return
+	}
+	if !s.deviceOnline(deviceID) {
+		writeErrorStatus(w, http.StatusServiceUnavailable, "选中的 Codex 客户端不在线")
+		return
+	}
+	conn, err := s.upgrader.Upgrade(w, request, nil)
+	if err != nil {
+		return
+	}
+	browser := &p2pBrowser{server: s, userID: user.ID, deviceID: deviceID, clientID: clientID, conn: conn}
+	s.registerP2PBrowser(browser)
+	defer func() {
+		s.unregisterP2PBrowser(browser)
+		_ = conn.Close()
+	}()
+	_ = browser.writeJSON(envelope{Type: "connected", Payload: mustJSON(map[string]interface{}{"deviceId": deviceID, "clientId": clientID, "iceServers": s.iceServers})})
+	for {
+		var message envelope
+		if err := conn.ReadJSON(&message); err != nil {
+			return
+		}
+		if message.Type != "p2p.signal" && message.Type != "p2p.close" {
+			continue
+		}
+		s.forwardP2PToAgent(browser, message)
+	}
+}
+
 func (s *relayServer) handleAgentMessage(peer *agentPeer, message envelope) {
 	switch message.Type {
 	case "event":
@@ -961,7 +1014,59 @@ func (s *relayServer) handleAgentMessage(peer *agentPeer, message envelope) {
 		}
 	case "response":
 		peer.resolve(message)
+	case "p2p.signal", "p2p.ready":
+		s.forwardP2PToBrowser(peer, message)
 	}
+}
+
+func (s *relayServer) registerP2PBrowser(browser *p2pBrowser) {
+	s.mu.Lock()
+	old := s.p2pBrowsers[browser.deviceID]
+	s.p2pBrowsers[browser.deviceID] = browser
+	s.mu.Unlock()
+	if old != nil && old != browser {
+		_ = old.conn.Close()
+	}
+}
+
+func (s *relayServer) unregisterP2PBrowser(browser *p2pBrowser) {
+	s.mu.Lock()
+	if s.p2pBrowsers[browser.deviceID] == browser {
+		delete(s.p2pBrowsers, browser.deviceID)
+	}
+	s.mu.Unlock()
+	if peer := s.agentPeer(browser.deviceID); peer != nil {
+		_ = peer.writeJSON(envelope{Type: "p2p.close", Payload: mustJSON(map[string]string{"clientId": browser.clientID})})
+	}
+}
+
+func (s *relayServer) forwardP2PToAgent(browser *p2pBrowser, message envelope) {
+	peer := s.agentPeer(browser.deviceID)
+	if peer == nil || peer.userID != browser.userID {
+		return
+	}
+	var payload map[string]interface{}
+	if json.Unmarshal(message.Payload, &payload) != nil {
+		return
+	}
+	payload["clientId"] = browser.clientID
+	_ = peer.writeJSON(envelope{Type: message.Type, Payload: mustJSON(payload)})
+}
+
+func (s *relayServer) forwardP2PToBrowser(peer *agentPeer, message envelope) {
+	s.mu.Lock()
+	browser := s.p2pBrowsers[peer.deviceID]
+	s.mu.Unlock()
+	if browser == nil || browser.userID != peer.userID {
+		return
+	}
+	_ = browser.writeJSON(message)
+}
+
+func (s *relayServer) agentPeer(deviceID string) *agentPeer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.agents[deviceID]
 }
 
 func (s *relayServer) health(w http.ResponseWriter, request *http.Request) {
@@ -1408,6 +1513,12 @@ func (p *agentPeer) writeJSON(value interface{}) error {
 	return p.conn.WriteJSON(value)
 }
 
+func (b *p2pBrowser) writeJSON(value interface{}) error {
+	b.write.Lock()
+	defer b.write.Unlock()
+	return b.conn.WriteJSON(value)
+}
+
 func (s *relayServer) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.Method == http.MethodOptions || !strings.HasPrefix(request.URL.Path, "/api/") || s.publicPath(request.URL.Path) {
@@ -1482,6 +1593,7 @@ func (s *relayServer) openapi(w http.ResponseWriter, request *http.Request) {
 			"/api/agent/login":              map[string]interface{}{"post": map[string]string{"summary": "本机客户端使用 Token 登录设备"}},
 			"/api/agent/validate":           map[string]interface{}{"get": map[string]string{"summary": "校验客户端 Token 和设备绑定"}},
 			"/api/agent/ws":                 map[string]interface{}{"get": map[string]string{"summary": "客户端 WebSocket 反向连接"}},
+			"/api/p2p/ws":                   map[string]interface{}{"get": map[string]string{"summary": "网页 WebRTC SDP/ICE 信令连接"}},
 			"/api/devices":                  map[string]interface{}{"get": map[string]string{"summary": "设备列表及在线状态"}},
 			"/api/threads":                  map[string]interface{}{"get": map[string]string{"summary": "从在线客户端读取历史对话"}},
 			"/api/threads/{id}":             map[string]interface{}{"delete": map[string]string{"summary": "归档 Codex 对话"}},
@@ -1651,6 +1763,16 @@ func env(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func splitList(value string) []string {
+	items := []string{}
+	for _, item := range strings.Split(value, ",") {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			items = append(items, trimmed)
+		}
+	}
+	return items
 }
 
 func min(first, second int) int {

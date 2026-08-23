@@ -5,15 +5,20 @@ Codex Link 是一个手机优先的 Vue 控制台，用于通过中心服务远�
 ## 架构
 
 ```text
-手机浏览器 <-> Go relay 服务端（Vue / HTTP / SSE / MySQL）
-                         <-> WebSocket <-> Go remote agent <-> 本机 Codex app-server
+手机浏览器 <-> Go relay 服务端（网页 / 登录 / 信令 / MySQL）
+       |                 <-> WebSocket <-> Go remote agent <-> 本机 Codex app-server
+       +-------------------- WebRTC DataChannel ----------------------^
 ```
 
 - 中心服务端使用 Docker Compose，运行 GHCR 镜像 `ghcr.io/ayflying/codex_link:latest`。
+- 浏览器进入设备后优先与本机 agent 建立 WebRTC DataChannel；relay 只传递 SDP/ICE 信令。
+- 会话接口、事件和图片附件优先走浏览器与 agent 的 P2P 通道；打洞失败或连接中断时自动回退到原 HTTP/SSE/WebSocket 中转。
 - 账号、Token、设备、会话、事件和图片元数据保存到 MySQL 8.4。
 - 图片二进制保存到 Docker `data` 卷。
 - 本机只运行 Go 客户端，主动连接服务端，不开放本地 HTTP 端口。
 - API Key、CCS 配置和 Codex 配置只留在运行 Codex 的电脑上。
+
+P2P 使用公开 STUN 服务发现可达地址，默认是 `stun:stun.l.google.com:19302`。relay 可以通过 `WEBRTC_STUN_SERVERS`（逗号分隔）配置 STUN 地址；客户端 agent 使用同名环境变量。没有 TURN 时，双方都处于对称 NAT 或网络禁止 UDP 的情况下会自动使用服务端中转。
 
 ## 部署中心服务端
 

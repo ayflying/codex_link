@@ -35,11 +35,13 @@ type remoteEnvelope struct {
 }
 
 type remoteAgent struct {
-	store  *Store
-	bridge *Bridge
-	config remoteAgentConfig
-	write  sync.Mutex
-	conn   *websocket.Conn
+	store    *Store
+	bridge   *Bridge
+	config   remoteAgentConfig
+	write    sync.Mutex
+	conn     *websocket.Conn
+	p2pMu    sync.Mutex
+	p2pPeers map[string]*p2pPeer
 }
 
 func isRemoteAgentMode() bool {
@@ -107,7 +109,8 @@ func runRemoteAgent(root, cwd, dataDir string) {
 		config.DeviceName = localDeviceName()
 	}
 	store := NewStore(dataDir)
-	agent := &remoteAgent{store: store, bridge: NewBridge(store, cwd), config: config}
+	agent := &remoteAgent{store: store, bridge: NewBridge(store, cwd), config: config, p2pPeers: map[string]*p2pPeer{}}
+	agent.initP2P()
 	store.SetEventHook(func(event Event) { agent.send("event", "", "", event) })
 	store.SetSessionHook(func(session Session) { agent.send("session", "", "", session) })
 	log.Printf("Codex Remote 客户端: %s", config.DeviceName)
@@ -204,6 +207,8 @@ func (a *remoteAgent) connectAndServe() error {
 		}
 		if message.Type == "command" {
 			go a.handleCommand(message)
+		} else if message.Type == "p2p.signal" || message.Type == "p2p.close" {
+			a.handleP2PMessage(message)
 		}
 	}
 }
@@ -349,6 +354,11 @@ func (a *remoteAgent) send(kind, requestID, action string, payload interface{}, 
 	}
 	if len(messageError) > 0 {
 		message.Error = messageError[0]
+	}
+	if message.Type == "event" {
+		if a.sendP2P(message) {
+			return
+		}
 	}
 	a.write.Lock()
 	defer a.write.Unlock()

@@ -1,6 +1,6 @@
 # Codex Link API
 
-中心服务端提供网页、手机和外部系统使用的 HTTP API。运行 Codex 的电脑使用 Go 客户端，通过主动建立的 WebSocket 连接接入服务端，不开放本机 HTTP 端口。
+中心服务端提供网页、手机和外部系统使用的 HTTP API。运行 Codex 的电脑使用 Go 客户端，通过主动建立的 WebSocket 连接接入服务端，不开放本机 HTTP 端口。网页控制台会优先使用 WebRTC DataChannel 直连 agent，失败时自动使用下面的 HTTP/SSE API。
 
 默认服务地址：
 
@@ -143,6 +143,16 @@ codex-remote-agent.exe login `
   --device "办公室电脑"
 ```
 
+### WebRTC 信令 `/api/p2p/ws`
+
+网页使用当前登录 Cookie 连接：
+
+```text
+GET /api/p2p/ws?deviceId=<设备 ID>&clientId=<本次网页连接 ID>
+```
+
+该 WebSocket 只转发 `p2p.signal` 消息中的 SDP offer/answer 和 ICE candidate，不承载会话内容或图片。建立 DataChannel 后，浏览器使用与 agent WebSocket 相同的 `command`、`response`、`event` 和 `session` envelope；服务端中转仍保留为自动回退路径。
+
 ## 设备和会话
 
 ### GET `/api/devices`
@@ -155,7 +165,7 @@ codex-remote-agent.exe login `
 
 ### GET `/api/threads`
 
-从选中的在线客户端读取 Codex 历史对话并同步会话元数据。可使用 `?deviceId=<设备 ID>` 指定设备。
+从选中的在线客户端读取 Codex 历史对话并同步会话元数据。可使用 `?deviceId=<设备 ID>` 指定设备；网页控制台在 P2P 直连时会改用 DataChannel 的 `threads.list` 命令。
 
 ### GET `/api/sessions`
 
