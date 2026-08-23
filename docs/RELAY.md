@@ -47,6 +47,8 @@ docker compose up -d --pull always
 
 账号、Token、设备、会话和事件保存在 MySQL volume `mysql_data`，服务端中转的图片文件保存在 Docker volume `data`。P2P 模式下图片直接写入 agent 的本地 `data-remote-agent/uploads`，不会经过 relay。新数据库从空数据开始，不会导入旧的 `relay-store.json`。服务端不保存本机 Codex/CCS/API Key。
 
+服务端启动时会自动执行 `cmd/codex-relay-server/migrations` 下的数据库迁移。迁移文件使用 `001_init.sql`、`002_add_xxx.sql` 这样的递增版本号；已执行版本会记录在 MySQL 的 `schema_migrations` 表中，空数据库会自动建表，已有旧数据库会自动补齐当前版本。已执行迁移的名称或内容被修改时，服务端会拒绝启动，应该新增更高版本的迁移文件修正 schema。当前版本也会通过认证后的 `/api/health` 返回 `schemaVersion`。
+
 ## P2P、STUN 与回退
 
 网页选择在线设备后，会通过已登录网页会话连接 `/api/p2p/ws`，relay 只转发 SDP/ICE 信令。浏览器和 agent 建立 WebRTC DataChannel 后，线程、会话命令、事件和图片分块上传都走直连；页面状态栏显示“P2P 直连”。如果浏览器不支持 WebRTC、UDP 打洞失败、STUN 不可达或 DataChannel 中断，页面状态会显示“服务端中转”，自动恢复原来的 HTTP/SSE/WebSocket 路径。
