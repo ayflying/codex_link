@@ -522,6 +522,16 @@ func (a *remoteAgent) executeCommand(action string, payload json.RawMessage) (in
 			return nil, err
 		}
 		return map[string]bool{"ok": true}, nil
+	case "sessions.user-input":
+		var body struct {
+			RequestID string              `json:"requestId"`
+			Answers   map[string][]string `json:"answers"`
+		}
+		_ = json.Unmarshal(payload, &body)
+		if err := a.bridge.ResolveUserInput(body.RequestID, body.Answers); err != nil {
+			return nil, err
+		}
+		return map[string]bool{"ok": true}, nil
 	case "sessions.cancel":
 		if err := a.bridge.Cancel(); err != nil {
 			return nil, err

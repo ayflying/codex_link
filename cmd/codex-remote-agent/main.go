@@ -436,23 +436,24 @@ type pendingCall struct {
 const maxCodexRPCLineBytes = 64 * 1024 * 1024
 
 type Bridge struct {
-	mu              sync.Mutex
-	rpcMu           sync.Mutex
-	resumeMu        sync.Mutex
-	cmd             *exec.Cmd
-	stdin           io.WriteCloser
-	nextRPCID       int64
-	pending         map[int64]pendingCall
-	session         *Session
-	codexThreadID   string
-	activeTurnID    string
-	pendingApproval map[string]int64
-	initialized     bool
-	codexBin        string
-	cwd             string
-	store           *Store
-	readOnlyThreads map[string]Session
-	requestHook     func(string, interface{}) (interface{}, error)
+	mu               sync.Mutex
+	rpcMu            sync.Mutex
+	resumeMu         sync.Mutex
+	cmd              *exec.Cmd
+	stdin            io.WriteCloser
+	nextRPCID        int64
+	pending          map[int64]pendingCall
+	session          *Session
+	codexThreadID    string
+	activeTurnID     string
+	pendingApproval  map[string]interface{}
+	pendingUserInput map[string]interface{}
+	initialized      bool
+	codexBin         string
+	cwd              string
+	store            *Store
+	readOnlyThreads  map[string]Session
+	requestHook      func(string, interface{}) (interface{}, error)
 }
 
 func NewBridge(store *Store, cwd string) *Bridge {
@@ -464,12 +465,13 @@ func NewBridge(store *Store, cwd string) *Bridge {
 		codexBin = "codex"
 	}
 	return &Bridge{
-		pending:         map[int64]pendingCall{},
-		pendingApproval: map[string]int64{},
-		codexBin:        codexBin,
-		cwd:             cwd,
-		store:           store,
-		readOnlyThreads: map[string]Session{},
+		pending:          map[int64]pendingCall{},
+		pendingApproval:  map[string]interface{}{},
+		pendingUserInput: map[string]interface{}{},
+		codexBin:         codexBin,
+		cwd:              cwd,
+		store:            store,
+		readOnlyThreads:  map[string]Session{},
 	}
 }
 
@@ -668,7 +670,7 @@ func (b *Bridge) sendNotificationLocked(method string, params interface{}) error
 	return err
 }
 
-func (b *Bridge) writeResult(id int64, result interface{}) error {
+func (b *Bridge) writeResult(id interface{}, result interface{}) error {
 	b.mu.Lock()
 	stdin := b.stdin
 	b.mu.Unlock()
@@ -700,12 +702,31 @@ func (b *Bridge) handleLine(line string) {
 		return
 	}
 	if msg.Method != "" {
-		b.mapCodexEvent(msg.Method, msg.Params, id, hasNumericID)
+		requestID := interface{}(id)
+		hasRequestID := hasNumericID
+		if !hasRequestID && msg.ID != nil {
+			requestID = msg.ID
+			hasRequestID = true
+		}
+		b.mapCodexEvent(msg.Method, msg.Params, requestID, hasRequestID)
 	}
 }
 
-func (b *Bridge) mapCodexEvent(method string, params interface{}, requestID int64, hasRequestID bool) {
+func (b *Bridge) mapCodexEvent(method string, params interface{}, requestID interface{}, hasRequestID bool) {
 	payload := asMap(params)
+	if hasRequestID && method == "item/tool/requestUserInput" {
+		inputID := stringValue(requestID)
+		b.mu.Lock()
+		if b.pendingUserInput == nil {
+			b.pendingUserInput = map[string]interface{}{}
+		}
+		b.pendingUserInput[inputID] = requestID
+		b.mu.Unlock()
+		payload["requestId"] = inputID
+		b.updateStatus("waiting-user-input")
+		b.emit("user.input.requested", payload)
+		return
+	}
 	if hasRequestID && strings.Contains(method, "requestApproval") {
 		approvalID := stringValue(firstNonEmpty(payload["approvalId"], payload["itemId"], requestID))
 		b.mu.Lock()
@@ -1031,9 +1052,11 @@ func (b *Bridge) CreateSession(prompt, requestedCwd string) (Session, error) {
 	b.session = &session
 	b.mu.Unlock()
 	if err := b.ensureReady(); err != nil {
+		b.clearSessionState(session.ID)
 		return Session{}, err
 	}
 	if err := b.startCodexThread(threadCwd); err != nil {
+		b.clearSessionState(session.ID)
 		return Session{}, err
 	}
 	b.mu.Lock()
@@ -1047,6 +1070,18 @@ func (b *Bridge) CreateSession(prompt, requestedCwd string) (Session, error) {
 		}
 	}
 	return session, nil
+}
+
+func (b *Bridge) clearSessionState(sessionID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.session != nil && (sessionID == "" || b.session.ID == sessionID) {
+		b.session = nil
+	}
+	if sessionID == "" || b.codexThreadID == sessionID {
+		b.codexThreadID = ""
+		b.activeTurnID = ""
+	}
 }
 
 func (b *Bridge) startCodexThread(cwd string) error {
@@ -1092,7 +1127,11 @@ func (b *Bridge) SendMessage(text, sessionID string, attachments []Attachment) e
 		"threadId": threadID,
 		"input":    input,
 	}, settings)
-	result, err := b.request("turn/start", withTurnOptions(params, settings))
+	turnParams, err := b.withTurnOptions(params, settings)
+	if err != nil {
+		return err
+	}
+	result, err := b.request("turn/start", turnParams)
 	if err != nil {
 		return err
 	}
@@ -1374,6 +1413,35 @@ func (b *Bridge) ResolveApproval(approvalID, decision string) error {
 		result["decision"] = "accept"
 	}
 	return b.writeResult(requestID, result)
+}
+
+func (b *Bridge) ResolveUserInput(requestID string, answers map[string][]string) error {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return errors.New("缺少用户输入请求 ID")
+	}
+	b.mu.Lock()
+	rpcID, ok := b.pendingUserInput[requestID]
+	if ok {
+		delete(b.pendingUserInput, requestID)
+	}
+	b.mu.Unlock()
+	if !ok {
+		return errors.New("用户输入请求已失效")
+	}
+	responseAnswers := map[string]interface{}{}
+	for questionID, values := range answers {
+		cleaned := make([]string, 0, len(values))
+		for _, value := range values {
+			if value = strings.TrimSpace(value); value != "" {
+				cleaned = append(cleaned, value)
+			}
+		}
+		responseAnswers[questionID] = map[string]interface{}{"answers": cleaned}
+	}
+	b.emit("user.input.resolved", map[string]interface{}{"requestId": requestID, "answers": answers})
+	b.updateStatus("running")
+	return b.writeResult(rpcID, map[string]interface{}{"answers": responseAnswers})
 }
 
 func (b *Bridge) Cancel() error {
@@ -1747,12 +1815,9 @@ func developerInstructions(settings AppSettings) string {
 func withRuntimeOptions(params map[string]interface{}, settings AppSettings) map[string]interface{} {
 	settings = normalizeSettings(settings)
 	params["approvalPolicy"] = settings.ApprovalMode
-	params["approval_policy"] = settings.ApprovalMode
 	if settings.ApprovalMode == "never" {
-		params["sandboxMode"] = "danger-full-access"
-		params["sandbox_mode"] = "danger-full-access"
+		params["sandbox"] = "danger-full-access"
 	}
-	params["workMode"] = settings.WorkMode
 	return params
 }
 
@@ -1763,12 +1828,37 @@ func withModelOption(params map[string]interface{}, settings AppSettings) map[st
 	return params
 }
 
-func withTurnOptions(params map[string]interface{}, settings AppSettings) map[string]interface{} {
+func (b *Bridge) withTurnOptions(params map[string]interface{}, settings AppSettings) (map[string]interface{}, error) {
 	params = withModelOption(params, settings)
 	if effort := normalizeReasoningEffort(settings.ReasoningEffort); effort != "" {
 		params["effort"] = effort
 	}
-	return params
+	if settings.WorkMode != "plan" {
+		return params, nil
+	}
+	model := strings.TrimSpace(settings.Model)
+	if model == "" {
+		b.mu.Lock()
+		if b.session != nil {
+			model = strings.TrimSpace(b.session.Model)
+		}
+		b.mu.Unlock()
+	}
+	if model == "" {
+		return params, errors.New("计划模式无法确定当前模型，请先选择模型")
+	}
+	modeSettings := map[string]interface{}{
+		"model":                  model,
+		"developer_instructions": nil,
+	}
+	if effort := normalizeReasoningEffort(settings.ReasoningEffort); effort != "" {
+		modeSettings["reasoning_effort"] = effort
+	}
+	params["collaborationMode"] = map[string]interface{}{
+		"mode":     "plan",
+		"settings": modeSettings,
+	}
+	return params, nil
 }
 
 func messageInput(text string, attachments []Attachment) []map[string]interface{} {

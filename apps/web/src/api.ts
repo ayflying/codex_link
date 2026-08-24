@@ -38,6 +38,8 @@ export type RemoteEvent = {
     | "tool.output"
     | "approval.requested"
     | "approval.resolved"
+    | "user.input.requested"
+    | "user.input.resolved"
     | "turn.done"
     | "context.usage"
     | "queue.changed"
@@ -322,6 +324,13 @@ export async function sendApproval(sessionId: string, approvalId: string, decisi
   return request(`/api/sessions/${sessionId}/approvals`, {
     method: "POST",
     body: JSON.stringify({ approvalId, decision })
+  });
+}
+
+export async function sendUserInput(sessionId: string, requestId: string, answers: Record<string, string[]>) {
+  return request(`/api/sessions/${encodeURIComponent(sessionId)}/user-input`, {
+    method: "POST",
+    body: JSON.stringify({ requestId, answers })
   });
 }
 

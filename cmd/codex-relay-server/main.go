@@ -1656,6 +1656,29 @@ func (s *relayServer) sessionAction(w http.ResponseWriter, request *http.Request
 			return
 		}
 		writeJSON(w, map[string]bool{"ok": true})
+	case "user-input":
+		var body struct {
+			RequestID string              `json:"requestId"`
+			Answers   map[string][]string `json:"answers"`
+		}
+		if err := decodeJSON(request, &body); err != nil {
+			writeErrorStatus(w, http.StatusBadRequest, "请求格式不正确")
+			return
+		}
+		if strings.TrimSpace(body.RequestID) == "" {
+			writeErrorStatus(w, http.StatusBadRequest, "缺少用户输入请求 ID")
+			return
+		}
+		_, err := s.command(user.ID, deviceID, "sessions.user-input", map[string]interface{}{
+			"id":        body.RequestID,
+			"requestId": body.RequestID,
+			"answers":   body.Answers,
+		})
+		if err != nil {
+			writeErrorStatus(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, map[string]bool{"ok": true})
 	case "cancel":
 		_, err := s.command(user.ID, deviceID, "sessions.cancel", map[string]string{"id": sessionID})
 		if err != nil {
@@ -2004,6 +2027,7 @@ func (s *relayServer) openapi(w http.ResponseWriter, request *http.Request) {
 			"/api/sessions/{id}/events":     map[string]interface{}{"get": map[string]string{"summary": "SSE 流式事件"}},
 			"/api/sessions/{id}/messages":   map[string]interface{}{"post": map[string]string{"summary": "发送消息并经 WebSocket 转发"}},
 			"/api/sessions/{id}/approvals":  map[string]interface{}{"post": map[string]string{"summary": "提交审批"}},
+			"/api/sessions/{id}/user-input": map[string]interface{}{"post": map[string]string{"summary": "提交计划模式候选选择"}},
 			"/api/sessions/{id}/cancel":     map[string]interface{}{"post": map[string]string{"summary": "取消当前 turn"}},
 			"/api/sessions/{id}/queue":      map[string]interface{}{"get": map[string]string{"summary": "读取 Codex 原生待发送队列"}, "post": map[string]string{"summary": "管理 Codex 原生待发送队列"}},
 			"/api/sessions/{id}/goal":       map[string]interface{}{"get": map[string]string{"summary": "读取 Codex 线程目标"}, "post": map[string]string{"summary": "设置或清除 Codex 线程目标"}},

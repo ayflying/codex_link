@@ -464,14 +464,65 @@ func TestWithModelOption(t *testing.T) {
 }
 
 func TestWithTurnOptionsIncludesValidatedReasoningEffort(t *testing.T) {
-	params := withTurnOptions(map[string]interface{}{}, AppSettings{Model: " gpt-5-codex ", ReasoningEffort: " high "})
+	bridge := &Bridge{}
+	params, err := bridge.withTurnOptions(map[string]interface{}{}, AppSettings{Model: " gpt-5-codex ", ReasoningEffort: " high "})
+	if err != nil {
+		t.Fatalf("unexpected turn options error: %v", err)
+	}
 	if params["model"] != "gpt-5-codex" || params["effort"] != "high" {
 		t.Fatalf("expected model and effort options, got %#v", params)
 	}
 
-	params = withTurnOptions(map[string]interface{}{}, AppSettings{ReasoningEffort: "unsupported"})
+	params, err = bridge.withTurnOptions(map[string]interface{}{}, AppSettings{ReasoningEffort: "unsupported"})
+	if err != nil {
+		t.Fatalf("unexpected default turn options error: %v", err)
+	}
 	if _, ok := params["effort"]; ok {
 		t.Fatalf("unsupported effort should not be sent: %#v", params)
+	}
+}
+
+func TestWithTurnOptionsUsesCodexPlanCollaborationMode(t *testing.T) {
+	bridge := &Bridge{}
+	params, err := bridge.withTurnOptions(map[string]interface{}{}, AppSettings{WorkMode: "plan", Model: "gpt-5-codex", ReasoningEffort: "medium"})
+	if err != nil {
+		t.Fatalf("unexpected plan options error: %v", err)
+	}
+	mode := params["collaborationMode"].(map[string]interface{})
+	if mode["mode"] != "plan" {
+		t.Fatalf("expected plan collaboration mode, got %#v", mode)
+	}
+	settings := mode["settings"].(map[string]interface{})
+	if settings["model"] != "gpt-5-codex" || settings["reasoning_effort"] != "medium" {
+		t.Fatalf("unexpected plan settings: %#v", settings)
+	}
+}
+
+func TestMapCodexUserInputRequestAndResolve(t *testing.T) {
+	writer := &recordingWriteCloser{}
+	bridge := &Bridge{
+		stdin:            writer,
+		pendingUserInput: map[string]interface{}{},
+		store:            NewStore(t.TempDir()),
+		session:          &Session{ID: "thread-plan", Status: "running"},
+	}
+	bridge.mapCodexEvent("item/tool/requestUserInput", map[string]interface{}{
+		"threadId": "thread-plan",
+		"turnId":   "turn-1",
+		"itemId":   "item-1",
+		"questions": []interface{}{map[string]interface{}{
+			"id": "choice", "header": "方案", "question": "选择方案", "options": []interface{}{map[string]interface{}{"label": "A", "description": "方案 A"}},
+		}},
+	}, 42, true)
+	if err := bridge.ResolveUserInput("42", map[string][]string{"choice": {"A"}}); err != nil {
+		t.Fatalf("resolve user input: %v", err)
+	}
+	var response rpcMessage
+	if err := json.Unmarshal(bytes.TrimSpace(writer.Bytes()), &response); err != nil {
+		t.Fatalf("decode user input response: %v", err)
+	}
+	if response.ID != float64(42) {
+		t.Fatalf("unexpected response id: %#v", response.ID)
 	}
 }
 
@@ -588,6 +639,54 @@ func TestRemoteAgentCreateSessionUsesSelectedProjectCwd(t *testing.T) {
 	session := result.(map[string]interface{})["session"].(Session)
 	if threadStartCwd != projectCwd || session.Cwd != projectCwd {
 		t.Fatalf("project cwd was not propagated: start=%q session=%q", threadStartCwd, session.Cwd)
+	}
+}
+
+func TestBridgeCreateSessionWithPlanModeStartsPlanTurn(t *testing.T) {
+	store := NewStore(t.TempDir())
+	store.UpdateSettings(AppSettings{ApprovalMode: "on-request", WorkMode: "plan", Model: "gpt-5-codex", ReasoningEffort: "medium"})
+	var turnStarted bool
+	bridge := &Bridge{
+		cmd:         &exec.Cmd{},
+		initialized: true,
+		cwd:         `D:\\git\\default-workspace`,
+		store:       store,
+		requestHook: func(method string, params interface{}) (interface{}, error) {
+			switch method {
+			case "thread/start":
+				options := params.(map[string]interface{})
+				if _, ok := options["workMode"]; ok {
+					t.Fatalf("thread/start must not receive legacy workMode: %#v", options)
+				}
+				return map[string]interface{}{
+					"thread": map[string]interface{}{"id": "thread-plan"},
+					"model":  "gpt-5-codex",
+				}, nil
+			case "turn/start":
+				options := params.(map[string]interface{})
+				mode, ok := options["collaborationMode"].(map[string]interface{})
+				if !ok || mode["mode"] != "plan" {
+					t.Fatalf("turn/start must use plan collaboration mode: %#v", options)
+				}
+				settings, ok := mode["settings"].(map[string]interface{})
+				if !ok || settings["model"] != "gpt-5-codex" || settings["reasoning_effort"] != "medium" {
+					t.Fatalf("unexpected plan collaboration settings: %#v", mode)
+				}
+				turnStarted = true
+				return map[string]interface{}{"turn": map[string]interface{}{"id": "turn-plan"}}, nil
+			default:
+				t.Fatalf("unexpected app-server request: %s", method)
+				return nil, nil
+			}
+		},
+	}
+
+	session, err := bridge.CreateSession("计划测试", "")
+	if err != nil {
+		t.Fatalf("create plan session: %v", err)
+	}
+	if session.ID != "thread-plan" || session.Model != "gpt-5-codex" || !turnStarted {
+		t.Fatalf("unexpected plan session result: %#v, turnStarted=%v", session, turnStarted)
 	}
 }
 

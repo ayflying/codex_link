@@ -82,6 +82,7 @@ import {
   deleteAdminUser,
   resumeThread,
   sendApproval,
+  sendUserInput,
   sendMessage,
   createPortMapping,
   deletePortMapping,
@@ -219,6 +220,7 @@ const dragOverKey = ref("");
 const historyLoading = ref(false);
 const historyHasMore = ref(false);
 const pendingRemoteEvents = new Map<string, RemoteEvent>();
+const userInputSelections = ref<Record<string, Record<string, string>>>({});
 let historyObserver: IntersectionObserver | null = null;
 let historyScrollArmed = false;
 
@@ -295,12 +297,21 @@ const pendingApprovals = computed(() => {
       .map((event) => String(event.payload.approvalId || event.id))
   );
 });
+const pendingUserInputs = computed(() => {
+  const resolved = new Set(
+    events.value
+      .filter((event) => event.type === "user.input.resolved")
+      .map((event) => String(event.payload.requestId || ""))
+  );
+  return events.value.filter((event) => event.type === "user.input.requested" && !resolved.has(String(event.payload.requestId || "")));
+});
 const displayEvents = computed(() => {
   const filtered = [...events.value]
     .sort((a, b) => a.id - b.id)
     .filter((event) => {
       if (event.type === "session.status") return false;
       if (event.type === "approval.resolved") return false;
+      if (event.type === "user.input.resolved") return false;
       if (event.type === "turn.done") return false;
       if (event.type === "context.usage") return false;
       if (event.type === "assistant.delta") return Boolean(eventText(event).trim());
@@ -1288,6 +1299,10 @@ function selectReasoningEffort(event: Event) {
   void saveSettings({ reasoningEffort: (event.target as HTMLSelectElement).value as AppSettings["reasoningEffort"] });
 }
 
+function selectWorkMode(event: Event) {
+  void saveSettings({ workMode: (event.target as HTMLSelectElement).value as AppSettings["workMode"] });
+}
+
 function reasoningEffortLabel(effort: AppSettings["reasoningEffort"]) {
   switch (effort) {
     case "minimal": return "最小";
@@ -1449,6 +1464,63 @@ async function approve(event: RemoteEvent, decision: "approved" | "rejected") {
   );
 }
 
+type UserInputOption = { label: string; description: string };
+type UserInputQuestion = {
+  id: string;
+  header: string;
+  question: string;
+  isOther?: boolean;
+  options?: UserInputOption[] | null;
+};
+
+function userInputRequestID(event: RemoteEvent) {
+  return String(event.payload.requestId || "");
+}
+
+function userInputQuestions(event: RemoteEvent): UserInputQuestion[] {
+  return Array.isArray(event.payload.questions) ? event.payload.questions as UserInputQuestion[] : [];
+}
+
+function userInputSelection(event: RemoteEvent, questionID: string) {
+  return userInputSelections.value[userInputRequestID(event)]?.[questionID] || "";
+}
+
+function chooseUserInput(event: RemoteEvent, questionID: string, value: string) {
+  const requestID = userInputRequestID(event);
+  userInputSelections.value = {
+    ...userInputSelections.value,
+    [requestID]: {
+      ...(userInputSelections.value[requestID] || {}),
+      [questionID]: value
+    }
+  };
+}
+
+function updateUserInput(event: RemoteEvent, questionID: string, inputEvent: Event) {
+  chooseUserInput(event, questionID, (inputEvent.target as HTMLInputElement).value);
+}
+
+function canSubmitUserInput(event: RemoteEvent) {
+  const selections = userInputSelections.value[userInputRequestID(event)] || {};
+  return userInputQuestions(event).length > 0 && userInputQuestions(event).every((question) => Boolean(selections[question.id]?.trim()));
+}
+
+async function submitUserInput(event: RemoteEvent) {
+  if (!activeSession.value || !canSubmitUserInput(event)) return;
+  const requestID = userInputRequestID(event);
+  const selected = userInputSelections.value[requestID] || {};
+  const answers = Object.fromEntries(Object.entries(selected).map(([questionID, answer]) => [questionID, [answer]]));
+  try {
+    await commandWithFallback(
+      "sessions.user-input",
+      { id: activeSession.value.id, requestId: requestID, answers },
+      () => sendUserInput(activeSession.value!.id, requestID, answers)
+    );
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason);
+  }
+}
+
 async function cancel() {
   if (!activeSession.value) return;
   await commandWithFallback(
@@ -1574,6 +1646,8 @@ function connectEvents(sessionId: string, reset = true) {
     "tool.output",
     "approval.requested",
     "approval.resolved",
+    "user.input.requested",
+    "user.input.resolved",
     "turn.done",
     "context.usage",
     "queue.changed",
@@ -1768,6 +1842,9 @@ function eventText(event: RemoteEvent) {
     ].filter(Boolean);
     return parts.join("\n");
   }
+  if (event.type === "user.input.requested") {
+    return userInputQuestions(event).map((question) => question.question).join("\n");
+  }
   if (event.type === "error") return String(event.payload.message || JSON.stringify(event.payload));
   return compactPayload(event.payload);
 }
@@ -1843,6 +1920,8 @@ function eventLabel(event: RemoteEvent) {
     "tool.output": "输出",
     "approval.requested": "需要审批",
     "approval.resolved": "审批结果",
+    "user.input.requested": "需要选择",
+    "user.input.resolved": "选择结果",
     "turn.done": "完成",
     "context.usage": "上下文",
     "queue.changed": "队列",
@@ -1875,6 +1954,7 @@ function statusLabel(status?: string) {
     idle: "空闲",
     running: "运行中",
     "waiting-approval": "等待审批",
+    "waiting-user-input": "等待选择",
     done: "已完成",
     error: "异常",
     cancelled: "已取消"
@@ -2488,6 +2568,36 @@ function transportLabel(status: typeof transportState.value) {
             <span>拒绝</span>
           </button>
         </div>
+        <div v-if="event.type === 'user.input.requested' && pendingUserInputs.some((item) => userInputRequestID(item) === userInputRequestID(event))" class="user-input-request">
+          <section v-for="question in userInputQuestions(event)" :key="question.id" class="user-input-question">
+            <strong>{{ question.header }}</strong>
+            <p>{{ question.question }}</p>
+            <div v-if="question.options?.length" class="user-input-options">
+              <button
+                v-for="option in question.options"
+                :key="option.label"
+                type="button"
+                class="user-input-option"
+                :class="{ selected: userInputSelection(event, question.id) === option.label }"
+                @click="chooseUserInput(event, question.id, option.label)"
+              >
+                <span>{{ option.label }}</span>
+                <small>{{ option.description }}</small>
+              </button>
+            </div>
+            <input
+              v-if="question.isOther || !question.options?.length"
+              :value="userInputSelection(event, question.id)"
+              type="text"
+              placeholder="输入自定义回答"
+              @input="updateUserInput(event, question.id, $event)"
+            />
+          </section>
+          <button class="primary icon-text" type="button" :disabled="!canSubmitUserInput(event)" @click="submitUserInput(event)">
+            <Check :size="17" />
+            <span>提交选择</span>
+          </button>
+        </div>
             </article>
           </section>
         </section>
@@ -2558,8 +2668,9 @@ function transportLabel(status: typeof transportState.value) {
             />
             <div class="composer-toolbar">
               <div class="composer-actions">
-                <button class="icon-button composer-plus" type="button" title="添加文件、目标或计划模式" :disabled="!canModifyActiveSession" @click="composerMenuOpen = !composerMenuOpen"><Plus :size="19" /></button>
+                <button class="icon-button composer-plus" type="button" title="添加文件或目标" :disabled="!canModifyActiveSession" @click="composerMenuOpen = !composerMenuOpen"><Plus :size="19" /></button>
                 <label class="composer-permission"><ShieldCheck :size="15" /><select v-model="settings.approvalMode" aria-label="权限模式" @change="saveSettings({ approvalMode: settings.approvalMode })"><option value="on-request">请求批准</option><option value="on-failure">按需批准</option><option value="never">完全访问</option></select></label>
+                <label class="composer-mode" title="工作模式"><Clock3 :size="15" /><select :value="settings.workMode" aria-label="工作模式" :disabled="!canModifyActiveSession" @change="selectWorkMode"><option value="edit">编辑</option><option value="plan">计划</option></select></label>
               </div>
               <div class="composer-controls">
                 <label class="composer-select composer-model-select" title="选择模型">
@@ -2591,7 +2702,6 @@ function transportLabel(status: typeof transportState.value) {
             <div class="composer-menu-label">添加</div>
             <button type="button" class="composer-menu-item" @click="openFilePicker"><Paperclip :size="16" /><span>文件和文件夹</span></button>
             <button type="button" class="composer-menu-item" :class="{ active: threadGoal }" @click="openGoalEditor"><Target :size="16" /><span>目标</span><small>{{ threadGoal ? "已设置" : "设置要持续追踪的目标" }}</small></button>
-            <button type="button" class="composer-menu-item" :class="{ active: settings.workMode === 'plan' }" @click="saveSettings({ workMode: settings.workMode === 'plan' ? 'edit' : 'plan' }); composerMenuOpen = false"><Clock3 :size="16" /><span>计划模式</span><small>{{ settings.workMode === 'plan' ? "已开启" : "开启计划模式" }}</small></button>
           </div>
           <div v-if="goalEditorOpen && !activeSessionReadOnly" class="goal-editor">
             <div class="goal-editor-heading"><Target :size="16" /><strong>目标</strong><button type="button" class="queue-icon" title="关闭" @click="goalEditorOpen = false"><X :size="15" /></button></div>
