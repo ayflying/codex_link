@@ -59,7 +59,7 @@ MySQL 只通过 Compose 内部网络提供给 relay，不对外暴露端口。�
 docker compose up -d --pull always
 ```
 
-完整部署和客户端说明见 [docs/RELAY.md](docs/RELAY.md)，接口说明见 [docs/API.md](docs/API.md)。
+完整部署和客户端说明见 [docs/RELAY.md](docs/RELAY.md)，接口说明见 [docs/API.md](docs/API.md)，产品需求与验收范围见 [docs/PRD.md](docs/PRD.md)。
 
 ## 构建和登录客户端
 
