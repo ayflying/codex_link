@@ -458,15 +458,11 @@ func (s *relayServer) p2pICEServers() []webrtc.ICEServer {
 	return []webrtc.ICEServer{{URLs: urls}}
 }
 
-func (s *relayServer) adminPortMappings(w http.ResponseWriter, request *http.Request) {
+func (s *relayServer) userPortMappings(w http.ResponseWriter, request *http.Request) {
 	_ = s.iceServersForRequest(request)
 	user, ok := s.userFromRequest(request)
 	if !ok {
 		writeErrorStatus(w, http.StatusUnauthorized, "请先登录")
-		return
-	}
-	if !user.IsAdmin {
-		writeErrorStatus(w, http.StatusForbidden, "仅管理员可以管理端口映射")
 		return
 	}
 	switch request.Method {
@@ -504,18 +500,14 @@ func (s *relayServer) adminPortMappings(w http.ResponseWriter, request *http.Req
 	}
 }
 
-func (s *relayServer) adminPortMappingItem(w http.ResponseWriter, request *http.Request) {
+func (s *relayServer) userPortMappingItem(w http.ResponseWriter, request *http.Request) {
 	_ = s.iceServersForRequest(request)
 	user, ok := s.userFromRequest(request)
 	if !ok {
 		writeErrorStatus(w, http.StatusUnauthorized, "请先登录")
 		return
 	}
-	if !user.IsAdmin {
-		writeErrorStatus(w, http.StatusForbidden, "仅管理员可以管理端口映射")
-		return
-	}
-	mappingID := strings.Trim(strings.TrimPrefix(request.URL.Path, "/api/admin/port-mappings/"), "/")
+	mappingID := strings.Trim(strings.TrimPrefix(request.URL.Path, "/api/port-mappings/"), "/")
 	if mappingID == "" || strings.Contains(mappingID, "/") {
 		writeErrorStatus(w, http.StatusNotFound, "端口映射不存在")
 		return

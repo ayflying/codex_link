@@ -220,25 +220,25 @@ export async function deleteAdminUser(userId: string) {
 }
 
 export async function getPortMappings() {
-  return request<{ mappings: PortMapping[] }>("/api/admin/port-mappings");
+  return request<{ mappings: PortMapping[] }>("/api/port-mappings");
 }
 
 export async function createPortMapping(mapping: PortMappingDraft) {
-  return request<{ mapping: PortMapping }>("/api/admin/port-mappings", {
+  return request<{ mapping: PortMapping }>("/api/port-mappings", {
     method: "POST",
     body: JSON.stringify(mapping)
   });
 }
 
 export async function updatePortMapping(id: string, mapping: PortMappingDraft) {
-  return request<{ mapping: PortMapping }>(`/api/admin/port-mappings/${encodeURIComponent(id)}`, {
+  return request<{ mapping: PortMapping }>(`/api/port-mappings/${encodeURIComponent(id)}`, {
     method: "PATCH",
     body: JSON.stringify(mapping)
   });
 }
 
 export async function deletePortMapping(id: string) {
-  return request<{ ok: boolean }>(`/api/admin/port-mappings/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return request<{ ok: boolean }>(`/api/port-mappings/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export async function getTokens() {

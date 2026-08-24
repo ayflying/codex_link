@@ -750,8 +750,8 @@ func main() {
 	mux.HandleFunc("/api/auth/tokens/", server.authTokenItem)
 	mux.HandleFunc("/api/admin/users", server.adminUsers)
 	mux.HandleFunc("/api/admin/users/", server.adminUserItem)
-	mux.HandleFunc("/api/admin/port-mappings", server.adminPortMappings)
-	mux.HandleFunc("/api/admin/port-mappings/", server.adminPortMappingItem)
+	mux.HandleFunc("/api/port-mappings", server.userPortMappings)
+	mux.HandleFunc("/api/port-mappings/", server.userPortMappingItem)
 	mux.HandleFunc("/api/agent/login", server.agentLogin)
 	mux.HandleFunc("/api/agent/validate", server.agentValidate)
 	mux.HandleFunc("/api/agent/ws", server.agentWebSocket)
@@ -1978,8 +1978,8 @@ func (s *relayServer) openapi(w http.ResponseWriter, request *http.Request) {
 			"/api/auth/tokens/{id}":         map[string]interface{}{"delete": map[string]string{"summary": "删除指定 Token"}},
 			"/api/admin/users":              map[string]interface{}{"get": map[string]string{"summary": "管理员查询用户列表"}},
 			"/api/admin/users/{id}":         map[string]interface{}{"patch": map[string]string{"summary": "管理员设置用户角色"}, "delete": map[string]string{"summary": "管理员删除用户"}},
-			"/api/admin/port-mappings":      map[string]interface{}{"get": map[string]string{"summary": "管理员查询端口映射"}, "post": map[string]string{"summary": "管理员创建仅 P2P TCP 映射"}},
-			"/api/admin/port-mappings/{id}": map[string]interface{}{"patch": map[string]string{"summary": "管理员更新端口映射"}, "delete": map[string]string{"summary": "管理员删除端口映射"}},
+			"/api/port-mappings":            map[string]interface{}{"get": map[string]string{"summary": "查询当前用户的端口映射"}, "post": map[string]string{"summary": "创建仅 P2P TCP 映射"}},
+			"/api/port-mappings/{id}":       map[string]interface{}{"patch": map[string]string{"summary": "更新当前用户的端口映射"}, "delete": map[string]string{"summary": "删除当前用户的端口映射"}},
 			"/api/agent/login":              map[string]interface{}{"post": map[string]string{"summary": "本机客户端使用 Token 登录设备"}},
 			"/api/agent/validate":           map[string]interface{}{"get": map[string]string{"summary": "校验客户端 Token 和设备绑定"}},
 			"/api/agent/ws":                 map[string]interface{}{"get": map[string]string{"summary": "客户端 WebSocket 反向连接"}},
