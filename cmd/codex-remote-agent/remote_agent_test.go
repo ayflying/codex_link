@@ -199,6 +199,12 @@ func TestResumeThreadReadsHistoryWhenAnotherWriterIsActive(t *testing.T) {
 		requestHook: func(method string, params interface{}) (interface{}, error) {
 			requests = append(requests, method)
 			switch method {
+			case "thread/unsubscribe":
+				body := params.(map[string]interface{})
+				if body["threadId"] != attachedID {
+					t.Fatalf("unexpected thread/unsubscribe params: %#v", body)
+				}
+				return map[string]interface{}{"status": "unsubscribed"}, nil
 			case "thread/resume":
 				return nil, errors.New("thread/resume error: map[code:-32600 message:thread thread-busy already has an active writer]")
 			case "thread/read":
@@ -230,11 +236,11 @@ func TestResumeThreadReadsHistoryWhenAnotherWriterIsActive(t *testing.T) {
 	if session.Mode != "host-readonly" || session.Note != readOnlyThreadNote {
 		t.Fatalf("expected read-only session, got %#v", session)
 	}
-	if got := bridge.CurrentSession(); got == nil || got.ID != attachedID {
-		t.Fatalf("active writable session was replaced: %#v", got)
+	if got := bridge.CurrentSession(); got != nil {
+		t.Fatalf("previous writable session was not released: %#v", got)
 	}
-	if len(requests) != 2 || requests[0] != "thread/resume" || requests[1] != "thread/read" {
-		t.Fatalf("expected resume then read fallback, got %#v", requests)
+	if len(requests) != 3 || requests[0] != "thread/unsubscribe" || requests[1] != "thread/resume" || requests[2] != "thread/read" {
+		t.Fatalf("expected unsubscribe, resume then read fallback, got %#v", requests)
 	}
 	events := store.Events(busyID, 0, 10)
 	if len(events) != 2 || events[0].Payload["text"] != "历史问题" || events[1].Payload["text"] != "历史回答" {
@@ -246,8 +252,51 @@ func TestResumeThreadReadsHistoryWhenAnotherWriterIsActive(t *testing.T) {
 	if _, err := bridge.QueueList(busyID); !errors.Is(err, errThreadReadOnly) {
 		t.Fatalf("expected read-only queue rejection, got %v", err)
 	}
-	if len(requests) != 2 {
+	if len(requests) != 3 {
 		t.Fatalf("read-only commands should not retry app-server resume: %#v", requests)
+	}
+}
+
+func TestReleaseThreadUnsubscribesCurrentWriter(t *testing.T) {
+	store := NewStore(t.TempDir())
+	const threadID = "thread-release"
+	const turnID = "turn-release"
+	requests := []string{}
+	bridge := &Bridge{
+		cmd:           &exec.Cmd{},
+		initialized:   true,
+		codexThreadID: threadID,
+		activeTurnID:  turnID,
+		session:       &Session{ID: threadID, Status: "idle"},
+		store:         store,
+		requestHook: func(method string, params interface{}) (interface{}, error) {
+			requests = append(requests, method)
+			body := params.(map[string]interface{})
+			if body["threadId"] != threadID {
+				t.Fatalf("unexpected release request: %s %#v", method, body)
+			}
+			switch method {
+			case "turn/interrupt":
+				if body["turnId"] != turnID {
+					t.Fatalf("unexpected interrupt request: %#v", body)
+				}
+				return map[string]interface{}{}, nil
+			case "thread/unsubscribe":
+				return map[string]interface{}{"status": "unsubscribed"}, nil
+			default:
+				t.Fatalf("unexpected release request: %s %#v", method, body)
+				return nil, nil
+			}
+		},
+	}
+	if err := bridge.ReleaseThread(threadID); err != nil {
+		t.Fatalf("release thread: %v", err)
+	}
+	if len(requests) != 2 || requests[0] != "turn/interrupt" || requests[1] != "thread/unsubscribe" {
+		t.Fatalf("expected interrupt then unsubscribe, got %#v", requests)
+	}
+	if bridge.CurrentSession() != nil {
+		t.Fatal("released thread remains attached")
 	}
 }
 

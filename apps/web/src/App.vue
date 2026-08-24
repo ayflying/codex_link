@@ -58,6 +58,7 @@ import {
   getTokens,
   login,
   register,
+  releaseThread,
   refreshToken,
   logout,
   deleteAdminUser,
@@ -280,6 +281,7 @@ const visibleEvents = computed(() => displayEvents.value.slice(-renderLimit.valu
 onMounted(async () => {
   loadSidebarPreferences();
   applyTheme();
+  window.addEventListener("pagehide", releaseActiveThreadOnPageHide);
   await checkAuth();
   if (auth.value.authenticated) await refresh();
 });
@@ -287,6 +289,8 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   historyObserver?.disconnect();
   historyObserver = null;
+  window.removeEventListener("pagehide", releaseActiveThreadOnPageHide);
+  releaseActiveThreadOnPageHide();
 });
 
 watch(theme, () => {
@@ -342,7 +346,7 @@ async function refresh() {
     }
     const selectedDevice = devices.value.find((device) => device.id === activeDeviceId.value);
     if (!selectedDevice?.online) {
-      backToDevices();
+		await backToDevices();
       return;
     }
     const direct = await connectP2P(activeDeviceId.value);
@@ -415,6 +419,13 @@ async function savePassword() {
 }
 
 async function signOut() {
+  error.value = "";
+  try {
+    await releaseActiveThread();
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason);
+    return;
+  }
   p2p.close(false);
   p2p.setP2POnly(false);
   await logout();
@@ -633,12 +644,19 @@ async function removeAdminUser(user: AdminUser) {
 
 async function selectDevice(device: RemoteDevice) {
   if (!device.online) return;
-  activeDeviceId.value = device.id;
-  activeSessionId.value = "";
-  selectedProjectCwd.value = "";
-  events.value = [];
-  sidebarOpen.value = false;
-  await refresh();
+  loading.value = true;
+  error.value = "";
+  try {
+    if (activeSessionId.value) await releaseActiveThread();
+    activeDeviceId.value = device.id;
+    selectedProjectCwd.value = "";
+    sidebarOpen.value = false;
+    await refresh();
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    loading.value = false;
+  }
 }
 
 async function removeDevice(device: RemoteDevice) {
@@ -656,7 +674,14 @@ async function removeDevice(device: RemoteDevice) {
   }
 }
 
-function backToDevices() {
+async function backToDevices() {
+  error.value = "";
+  try {
+    await releaseActiveThread();
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason);
+    return;
+  }
   p2p.close(false);
   eventSource.value?.close();
   eventSource.value = null;
@@ -912,6 +937,7 @@ async function startSession() {
   loading.value = true;
   error.value = "";
   try {
+    await releaseActiveThread();
     const cwd = selectedProjectCwd.value || undefined;
     const { session } = await commandWithFallback(
       "sessions.create",
@@ -934,6 +960,7 @@ async function openThread(session: SessionRecord) {
   loading.value = true;
   error.value = "";
   try {
+    await releaseActiveThread();
     const { session: resumed } = await commandWithFallback(
       "threads.resume",
       { id: session.id },
@@ -980,6 +1007,7 @@ async function removeThread(session: SessionRecord) {
   loading.value = true;
   error.value = "";
   try {
+    if (activeSessionId.value === session.id) await releaseActiveThread();
     await commandWithFallback(
       "threads.archive",
       { id: session.id },
@@ -1694,6 +1722,36 @@ function eventText(event: RemoteEvent) {
 function isActiveWriterError(reason: unknown) {
   const message = reason instanceof Error ? reason.message : String(reason);
   return /already has an active writer/i.test(message);
+}
+
+async function releaseActiveThread() {
+  const session = activeSession.value;
+  if (!session) return;
+  if (!activeSessionReadOnly.value) {
+    await commandWithFallback(
+      "threads.release",
+      { id: session.id },
+      () => releaseThread(session.id)
+    );
+  }
+  if (activeSessionId.value !== session.id) return;
+  eventSource.value?.close();
+  eventSource.value = null;
+  activeSessionId.value = "";
+  events.value = [];
+  queuedSubmissions.value = [];
+  threadGoal.value = null;
+  streamState.value = "idle";
+}
+
+function releaseActiveThreadOnPageHide() {
+  const session = activeSession.value;
+  if (!session || activeSessionReadOnly.value) return;
+  p2p.notify("threads.release", { id: session.id });
+  const endpoint = `/api/threads/${encodeURIComponent(session.id)}/release`;
+  const body = new Blob(["{}"], { type: "application/json" });
+  if (navigator.sendBeacon?.(endpoint, body)) return;
+  void fetch(endpoint, { method: "POST", body, credentials: "same-origin", keepalive: true });
 }
 
 function eventHtml(event: RemoteEvent) {

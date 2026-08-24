@@ -1476,6 +1476,14 @@ func (s *relayServer) threadAction(w http.ResponseWriter, request *http.Request)
 		writeRawJSON(w, result)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "release" && request.Method == http.MethodPost {
+		if _, err := s.command(user.ID, deviceID, "threads.release", map[string]string{"id": threadID}); err != nil {
+			writeErrorStatus(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, map[string]bool{"ok": true})
+		return
+	}
 	if len(parts) == 1 && request.Method == http.MethodDelete {
 		if _, err := s.command(user.ID, deviceID, "threads.archive", map[string]string{"id": threadID}); err != nil {
 			writeErrorStatus(w, http.StatusBadGateway, err.Error())
@@ -1992,6 +2000,7 @@ func (s *relayServer) openapi(w http.ResponseWriter, request *http.Request) {
 			"/api/threads/{id}":             map[string]interface{}{"delete": map[string]string{"summary": "归档 Codex 对话"}},
 			"/api/threads/{id}/resume":      map[string]interface{}{"post": map[string]string{"summary": "恢复 Codex 对话"}},
 			"/api/sessions":                 map[string]interface{}{"get": map[string]string{"summary": "读取同步会话缓存"}, "post": map[string]string{"summary": "创建新会话"}},
+			"/api/threads/{id}/release":     map[string]interface{}{"post": map[string]string{"summary": "释放网页对 Codex 对话的写入占用"}},
 			"/api/sessions/{id}/events":     map[string]interface{}{"get": map[string]string{"summary": "SSE 流式事件"}},
 			"/api/sessions/{id}/messages":   map[string]interface{}{"post": map[string]string{"summary": "发送消息并经 WebSocket 转发"}},
 			"/api/sessions/{id}/approvals":  map[string]interface{}{"post": map[string]string{"summary": "提交审批"}},

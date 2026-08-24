@@ -390,6 +390,10 @@ export async function resumeThread(threadId: string) {
   return request<{ session: SessionRecord }>(`/api/threads/${threadId}/resume`, { method: "POST" });
 }
 
+export async function releaseThread(threadId: string) {
+  return request<{ ok: boolean }>(`/api/threads/${encodeURIComponent(threadId)}/release`, { method: "POST" });
+}
+
 export async function getSessionHistory(sessionId: string, before = 0, limit = 6) {
   const params = new URLSearchParams({ limit: String(limit) });
   if (before > 0) params.set("before", String(before));

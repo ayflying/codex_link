@@ -853,6 +853,9 @@ func (b *Bridge) ResumeThread(threadID string) (Session, error) {
 		return session, nil
 	}
 	b.mu.Unlock()
+	if err := b.releaseThreadLocked(); err != nil {
+		return Session{}, err
+	}
 	settings := b.store.Settings()
 	result, err := b.request("thread/resume", withRuntimeOptions(map[string]interface{}{
 		"threadId":              threadID,
@@ -909,6 +912,67 @@ func (b *Bridge) readThreadWhileWriterIsActive(threadID string) (Session, error)
 
 func isActiveWriterError(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "already has an active writer")
+}
+
+func (b *Bridge) ReleaseThread(threadID string) error {
+	b.resumeMu.Lock()
+	defer b.resumeMu.Unlock()
+	if strings.TrimSpace(threadID) == "" {
+		return errors.New("缺少会话 ID")
+	}
+	b.mu.Lock()
+	currentID := b.codexThreadID
+	if currentID == "" && b.session != nil {
+		currentID = b.session.ID
+	}
+	if currentID != threadID {
+		delete(b.readOnlyThreads, threadID)
+		b.mu.Unlock()
+		return nil
+	}
+	b.mu.Unlock()
+	return b.releaseThreadLocked()
+}
+
+func (b *Bridge) releaseThreadLocked() error {
+	b.mu.Lock()
+	threadID := b.codexThreadID
+	if threadID == "" && b.session != nil {
+		threadID = b.session.ID
+	}
+	if threadID == "" {
+		b.mu.Unlock()
+		return nil
+	}
+	if _, readOnly := b.readOnlyThreads[threadID]; readOnly {
+		delete(b.readOnlyThreads, threadID)
+		b.mu.Unlock()
+		return nil
+	}
+	processRunning := b.cmd != nil
+	b.mu.Unlock()
+	if processRunning {
+		b.mu.Lock()
+		turnID := b.activeTurnID
+		b.mu.Unlock()
+		if turnID != "" {
+			if _, err := b.request("turn/interrupt", map[string]interface{}{"threadId": threadID, "turnId": turnID}); err != nil {
+				return fmt.Errorf("停止 Codex 对话失败: %w", err)
+			}
+		}
+		if _, err := b.request("thread/unsubscribe", map[string]interface{}{"threadId": threadID}); err != nil {
+			return fmt.Errorf("释放 Codex 对话失败: %w", err)
+		}
+	}
+	b.mu.Lock()
+	if b.codexThreadID == threadID || (b.session != nil && b.session.ID == threadID) {
+		b.session = nil
+		b.codexThreadID = ""
+		b.activeTurnID = ""
+	}
+	delete(b.readOnlyThreads, threadID)
+	b.mu.Unlock()
+	return nil
 }
 
 func (b *Bridge) ArchiveThread(threadID string) error {

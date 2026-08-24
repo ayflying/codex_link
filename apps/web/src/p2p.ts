@@ -135,6 +135,16 @@ export class P2PTransport {
     });
   }
 
+  notify(action: string, payload: unknown) {
+    if (!this.isConnected() || !this.channel) return false;
+    try {
+      this.channel.send(JSON.stringify({ type: "command", requestId: randomID(), action, payload } satisfies P2PEnvelope));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async uploadAttachment(name: string, mimeType: string, dataUrl: string) {
     const raw = decodeDataURL(dataUrl);
     if (raw.byteLength === 0 || raw.byteLength > 16 * 1024 * 1024) throw new Error("单个文件必须小于 16MB");

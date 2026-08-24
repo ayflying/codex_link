@@ -370,6 +370,18 @@ func (a *remoteAgent) executeCommand(action string, payload json.RawMessage) (in
 		}
 		a.store.UpsertSessionLocal(session)
 		return map[string]interface{}{"session": session}, nil
+	case "threads.release":
+		var body struct {
+			ID string `json:"id"`
+		}
+		_ = json.Unmarshal(payload, &body)
+		if body.ID == "" {
+			return nil, errors.New("缺少对话 ID")
+		}
+		if err := a.bridge.ReleaseThread(body.ID); err != nil {
+			return nil, err
+		}
+		return map[string]bool{"ok": true}, nil
 	case "threads.archive":
 		var body struct {
 			ID string `json:"id"`
