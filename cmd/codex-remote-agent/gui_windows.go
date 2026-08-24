@@ -34,6 +34,16 @@ const (
 	wmPollState       = win.WM_APP + 4
 	wmTrayError       = win.WM_APP + 5
 	wmInitializeTray  = win.WM_APP + 6
+	guiLogTimer       = 1
+
+	guiWindowColor    = win.COLORREF(0x00f8f7f5)
+	guiInputColor     = win.COLORREF(0x00ffffff)
+	guiLogColor       = win.COLORREF(0x00f8f7f5)
+	guiInkColor       = win.COLORREF(0x00332b20)
+	guiMutedColor     = win.COLORREF(0x006b6155)
+	guiAccentColor    = win.COLORREF(0x00766f0f)
+	guiLogTextColor   = win.COLORREF(0x00443b2f)
+	guiLogTimerPeriod = 750
 )
 
 type clientGUI struct {
@@ -43,7 +53,15 @@ type clientGUI struct {
 	deviceEdit    win.HWND
 	statusLabel   win.HWND
 	detailLabel   win.HWND
+	logLabel      win.HWND
+	logEdit       win.HWND
 	connectButton win.HWND
+	titleLabel    win.HWND
+	helperLabel   win.HWND
+
+	windowBrush win.HBRUSH
+	inputBrush  win.HBRUSH
+	logBrush    win.HBRUSH
 
 	root    string
 	cwd     string
@@ -68,6 +86,8 @@ type clientGUI struct {
 	connectResult *guiConnectResult
 	agentExitErr  string
 	pollState     string
+	lastLogText   string
+	lastLogState  string
 }
 
 type guiConnectResult struct {
@@ -92,6 +112,18 @@ func runClientGUI(root, cwd, dataDir string) error {
 	config, _ := loadRemoteAgentConfig(dataDir)
 	instance := win.GetModuleHandle(nil)
 	icon, ownsIcon := createClientIcon()
+	windowBrush := createSolidBrush(guiWindowColor)
+	inputBrush := createSolidBrush(guiInputColor)
+	logBrush := createSolidBrush(guiLogColor)
+	if windowBrush == 0 || inputBrush == 0 || logBrush == 0 {
+		deleteBrush(windowBrush)
+		deleteBrush(inputBrush)
+		deleteBrush(logBrush)
+		if ownsIcon {
+			win.DestroyIcon(icon)
+		}
+		return errors.New("创建客户端界面配色失败")
+	}
 	className := syscall.StringToUTF16Ptr(clientWindowClass)
 	windowClass := win.WNDCLASSEX{
 		CbSize:        uint32(unsafe.Sizeof(win.WNDCLASSEX{})),
@@ -100,14 +132,23 @@ func runClientGUI(root, cwd, dataDir string) error {
 		HIcon:         icon,
 		HIconSm:       icon,
 		HCursor:       win.LoadCursor(0, win.MAKEINTRESOURCE(win.IDC_ARROW)),
-		HbrBackground: win.GetSysColorBrush(win.COLOR_WINDOW),
+		HbrBackground: windowBrush,
 		LpszClassName: className,
 	}
 	if win.RegisterClassEx(&windowClass) == 0 {
+		deleteBrush(windowBrush)
+		deleteBrush(inputBrush)
+		deleteBrush(logBrush)
+		if ownsIcon {
+			win.DestroyIcon(icon)
+		}
 		return fmt.Errorf("注册客户端窗口失败: %v", win.GetLastError())
 	}
 
-	gui := &clientGUI{root: root, cwd: cwd, dataDir: dataDir, config: config, icon: icon, ownsIcon: ownsIcon}
+	gui := &clientGUI{
+		root: root, cwd: cwd, dataDir: dataDir, config: config, icon: icon, ownsIcon: ownsIcon,
+		windowBrush: windowBrush, inputBrush: inputBrush, logBrush: logBrush,
+	}
 	hwnd := win.CreateWindowEx(
 		win.WS_EX_CONTROLPARENT,
 		className,
@@ -115,14 +156,15 @@ func runClientGUI(root, cwd, dataDir string) error {
 		win.WS_OVERLAPPEDWINDOW,
 		win.CW_USEDEFAULT,
 		win.CW_USEDEFAULT,
-		560,
-		410,
+		600,
+		590,
 		0,
 		0,
 		instance,
 		unsafe.Pointer(gui),
 	)
 	if hwnd == 0 {
+		gui.releaseBrushes()
 		if ownsIcon {
 			win.DestroyIcon(icon)
 		}
@@ -158,6 +200,10 @@ func clientWindowProc(hwnd win.HWND, message uint32, wParam, lParam uintptr) uin
 	switch message {
 	case win.WM_CREATE:
 		gui.createControls()
+	case win.WM_CTLCOLORSTATIC:
+		return gui.controlColor(win.HDC(wParam), win.HWND(lParam), false)
+	case win.WM_CTLCOLOREDIT:
+		return gui.controlColor(win.HDC(wParam), win.HWND(lParam), true)
 	case win.WM_COMMAND:
 		gui.handleCommand(win.LOWORD(uint32(wParam)))
 	case wmTray:
@@ -172,6 +218,10 @@ func clientWindowProc(hwnd win.HWND, message uint32, wParam, lParam uintptr) uin
 		gui.handleTrayError()
 	case wmInitializeTray:
 		gui.startTrayInitialization()
+	case win.WM_TIMER:
+		if wParam == guiLogTimer {
+			gui.refreshLogView()
+		}
 	case win.WM_CLOSE:
 		if gui.isQuitting() {
 			win.DestroyWindow(hwnd)
@@ -179,8 +229,10 @@ func clientWindowProc(hwnd win.HWND, message uint32, wParam, lParam uintptr) uin
 			win.ShowWindow(hwnd, win.SW_HIDE)
 		}
 	case win.WM_DESTROY:
+		win.KillTimer(hwnd, guiLogTimer)
 		gui.removeTray()
 		gui.releaseIcon()
+		gui.releaseBrushes()
 		win.PostQuitMessage(0)
 	default:
 		return win.DefWindowProc(hwnd, message, wParam, lParam)
@@ -217,19 +269,122 @@ func (g *clientGUI) createControls() {
 		return control
 	}
 
-	add("STATIC", "CODEX LINK", win.SS_LEFT, 0, 0, 24, 18, 500, 28)
-	add("STATIC", "连接本机 Codex 到远程工作区。配置保存后，下次双击即可启动。", win.SS_LEFT, 0, 0, 24, 52, 500, 26)
-	add("STATIC", "服务端地址", win.SS_LEFT, 0, 0, 24, 98, 100, 24)
-	g.serverEdit = add("EDIT", g.config.ServerURL, win.WS_TABSTOP|win.ES_LEFT|win.ES_AUTOHSCROLL, win.WS_EX_CLIENTEDGE, controlServer, 140, 94, 390, 26)
-	add("STATIC", "Token", win.SS_LEFT, 0, 0, 24, 138, 100, 24)
-	g.tokenEdit = add("EDIT", g.config.Token, win.WS_TABSTOP|win.ES_LEFT|win.ES_AUTOHSCROLL|win.ES_PASSWORD, win.WS_EX_CLIENTEDGE, controlToken, 140, 134, 390, 26)
-	add("STATIC", "设备名称", win.SS_LEFT, 0, 0, 24, 178, 100, 24)
-	g.deviceEdit = add("EDIT", firstNonEmptyString(g.config.DeviceName, localDeviceName()), win.WS_TABSTOP|win.ES_LEFT|win.ES_AUTOHSCROLL, win.WS_EX_CLIENTEDGE, controlDevice, 140, 174, 390, 26)
-	add("STATIC", "状态", win.SS_LEFT, 0, 0, 24, 222, 100, 24)
-	g.statusLabel = add("STATIC", "未连接", win.SS_LEFT, 0, 0, 140, 222, 390, 24)
-	g.detailLabel = add("STATIC", "填写服务端地址和 Token 后点击连接。", win.SS_LEFT, 0, 0, 24, 258, 506, 42)
-	g.connectButton = add("BUTTON", "连接并启动", win.BS_DEFPUSHBUTTON|win.WS_TABSTOP, 0, controlConnect, 310, 320, 112, 30)
-	add("BUTTON", "隐藏到托盘", win.BS_PUSHBUTTON|win.WS_TABSTOP, 0, controlHide, 430, 320, 100, 30)
+	g.titleLabel = add("STATIC", "CODEX LINK", win.SS_LEFT, 0, 0, 24, 22, 532, 24)
+	g.helperLabel = add("STATIC", "连接本机 Codex 到远程工作区。配置保存后，下次双击即可启动。", win.SS_LEFT, 0, 0, 24, 52, 532, 24)
+	add("STATIC", "服务端地址", win.SS_LEFT, 0, 0, 24, 94, 106, 24)
+	g.serverEdit = add("EDIT", g.config.ServerURL, win.WS_TABSTOP|win.ES_LEFT|win.ES_AUTOHSCROLL, win.WS_EX_CLIENTEDGE, controlServer, 140, 90, 416, 28)
+	add("STATIC", "Token", win.SS_LEFT, 0, 0, 24, 134, 106, 24)
+	g.tokenEdit = add("EDIT", g.config.Token, win.WS_TABSTOP|win.ES_LEFT|win.ES_AUTOHSCROLL|win.ES_PASSWORD, win.WS_EX_CLIENTEDGE, controlToken, 140, 130, 416, 28)
+	add("STATIC", "设备名称", win.SS_LEFT, 0, 0, 24, 174, 106, 24)
+	g.deviceEdit = add("EDIT", firstNonEmptyString(g.config.DeviceName, localDeviceName()), win.WS_TABSTOP|win.ES_LEFT|win.ES_AUTOHSCROLL, win.WS_EX_CLIENTEDGE, controlDevice, 140, 170, 416, 28)
+	add("STATIC", "状态", win.SS_LEFT, 0, 0, 24, 216, 106, 24)
+	g.statusLabel = add("STATIC", "未连接", win.SS_LEFT, 0, 0, 140, 216, 416, 24)
+	g.detailLabel = add("STATIC", "填写服务端地址和 Token 后点击连接。", win.SS_LEFT, 0, 0, 24, 250, 532, 28)
+	g.logLabel = add("STATIC", "运行日志（自动滚动）", win.SS_LEFT, 0, 0, 24, 294, 532, 22)
+	g.logEdit = add("EDIT", "等待后台运行日志...", win.WS_TABSTOP|win.WS_VSCROLL|win.ES_LEFT|win.ES_MULTILINE|win.ES_AUTOVSCROLL|win.ES_READONLY|win.ES_NOHIDESEL, win.WS_EX_CLIENTEDGE, 0, 24, 320, 532, 170)
+	g.connectButton = add("BUTTON", "连接并启动", win.BS_DEFPUSHBUTTON|win.WS_TABSTOP, 0, controlConnect, 336, 514, 116, 32)
+	add("BUTTON", "隐藏到托盘", win.BS_PUSHBUTTON|win.WS_TABSTOP, 0, controlHide, 460, 514, 96, 32)
+	g.refreshLogView()
+	win.SetTimer(g.hwnd, guiLogTimer, guiLogTimerPeriod, 0)
+}
+
+func createSolidBrush(color win.COLORREF) win.HBRUSH {
+	return win.CreateBrushIndirect(&win.LOGBRUSH{LbStyle: win.BS_SOLID, LbColor: color})
+}
+
+func deleteBrush(brush win.HBRUSH) {
+	if brush != 0 {
+		win.DeleteObject(win.HGDIOBJ(brush))
+	}
+}
+
+func (g *clientGUI) releaseBrushes() {
+	deleteBrush(g.windowBrush)
+	deleteBrush(g.inputBrush)
+	deleteBrush(g.logBrush)
+	g.windowBrush = 0
+	g.inputBrush = 0
+	g.logBrush = 0
+}
+
+func (g *clientGUI) controlColor(hdc win.HDC, control win.HWND, edit bool) uintptr {
+	if edit {
+		if control == g.logEdit {
+			win.SetTextColor(hdc, guiLogTextColor)
+			win.SetBkColor(hdc, guiLogColor)
+			return uintptr(g.logBrush)
+		}
+		win.SetTextColor(hdc, guiInkColor)
+		win.SetBkColor(hdc, guiInputColor)
+		return uintptr(g.inputBrush)
+	}
+
+	color := guiMutedColor
+	switch control {
+	case g.titleLabel:
+		color = guiInkColor
+	case g.statusLabel, g.logLabel:
+		color = guiAccentColor
+	case g.detailLabel, g.helperLabel:
+		color = guiMutedColor
+	}
+	win.SetTextColor(hdc, color)
+	win.SetBkColor(hdc, guiWindowColor)
+	win.SetBkMode(hdc, win.TRANSPARENT)
+	return uintptr(g.windowBrush)
+}
+
+func (g *clientGUI) refreshLogView() {
+	if g.logEdit == 0 {
+		return
+	}
+	text, err := readAgentGUILogTail(agentGUILogPath(g.dataDir), guiLogViewLimit)
+	if err != nil {
+		if os.IsNotExist(err) {
+			text = "等待后台运行日志..."
+		} else {
+			text = "读取运行日志失败: " + err.Error()
+		}
+	}
+	if text == "" {
+		text = "等待后台运行日志..."
+	}
+	if text == g.lastLogText {
+		return
+	}
+	g.lastLogText = text
+	setWindowText(g.logEdit, text)
+	end := win.SendMessage(g.logEdit, win.WM_GETTEXTLENGTH, 0, 0)
+	win.SendMessage(g.logEdit, win.EM_SETSEL, end, end)
+	win.SendMessage(g.logEdit, win.EM_SCROLLCARET, 0, 0)
+}
+
+func (g *clientGUI) resetLog(message string) {
+	path := agentGUILogPath(g.dataDir)
+	if err := os.MkdirAll(g.dataDir, 0o700); err != nil {
+		return
+	}
+	if err := os.WriteFile(path, []byte(formatGUILogLine(message)), 0o600); err == nil {
+		g.lastLogText = ""
+		g.refreshLogView()
+	}
+}
+
+func (g *clientGUI) appendLog(message string) {
+	if strings.TrimSpace(message) == "" {
+		return
+	}
+	file, err := os.OpenFile(agentGUILogPath(g.dataDir), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	_, _ = file.WriteString(formatGUILogLine(message))
+	_ = file.Close()
+	g.refreshLogView()
+}
+
+func formatGUILogLine(message string) string {
+	return time.Now().Format("2006/01/02 15:04:05") + " [界面] " + redactSensitiveText(strings.TrimSpace(message)) + "\r\n"
 }
 
 func (g *clientGUI) startTrayInitialization() {
@@ -393,6 +548,7 @@ func (g *clientGUI) connect() {
 		g.stopAgent()
 		setWindowText(g.statusLabel, "客户端已停止")
 		setWindowText(g.detailLabel, "后台客户端已停止。")
+		g.appendLog("已停止后台客户端。")
 		g.updateConnectButton()
 		return
 	}
@@ -415,6 +571,7 @@ func (g *clientGUI) connect() {
 	g.starting = true
 	g.mu.Unlock()
 
+	g.resetLog("开始连接服务端。")
 	g.setBusy(true)
 	setWindowText(g.statusLabel, "正在登录")
 	setWindowText(g.detailLabel, "正在向服务端登记设备，请稍候。")
@@ -473,6 +630,7 @@ func (g *clientGUI) startAgent(config remoteAgentConfig) error {
 	g.config = config
 	g.process = command
 	g.pollStop = make(chan struct{})
+	g.lastLogState = ""
 	pollStop := g.pollStop
 	g.mu.Unlock()
 	go g.waitForAgent(command)
@@ -552,11 +710,13 @@ func (g *clientGUI) handleConnectResult() {
 		g.updateConnectButton()
 		setWindowText(g.statusLabel, "连接失败")
 		setWindowText(g.detailLabel, result.err.Error())
+		g.appendLog("连接失败: " + result.err.Error())
 		messageBox(g.hwnd, result.err.Error(), "Codex Link", win.MB_ICONERROR|win.MB_OK)
 		return
 	}
 	setWindowText(g.statusLabel, "客户端已启动")
 	setWindowText(g.detailLabel, "后台连接已启动，关闭窗口会隐藏到系统托盘。")
+	g.appendLog("后台客户端已启动，等待服务端连接。")
 	g.updateConnectButton()
 }
 
@@ -571,6 +731,7 @@ func (g *clientGUI) handleAgentExited() {
 	g.updateConnectButton()
 	setWindowText(g.statusLabel, "客户端已停止")
 	setWindowText(g.detailLabel, detail)
+	g.appendLog("后台客户端已停止。")
 	if strings.HasPrefix(detail, "后台客户端异常退出:") {
 		messageBox(g.hwnd, detail, "Codex Link 客户端启动失败", win.MB_ICONERROR|win.MB_OK)
 	}
@@ -588,13 +749,24 @@ func (g *clientGUI) handlePollState() {
 	case "connected":
 		setWindowText(g.statusLabel, "已连接")
 		setWindowText(g.detailLabel, "客户端正在后台运行，网页可以连接此设备。")
+		g.logPollState(state, "已连接到服务端，网页可以连接此设备。")
 	case "auth":
 		setWindowText(g.statusLabel, "Token 已失效")
 		setWindowText(g.detailLabel, "请更新 Token 后重新连接。")
+		g.logPollState(state, "Token 已失效，请更新 Token 后重新连接。")
 	default:
 		setWindowText(g.statusLabel, "等待服务端")
 		setWindowText(g.detailLabel, "服务端暂时不可用，客户端会自动重试。")
+		g.logPollState(state, "服务端暂时不可用，客户端会自动重试。")
 	}
+}
+
+func (g *clientGUI) logPollState(state, message string) {
+	if state == g.lastLogState {
+		return
+	}
+	g.lastLogState = state
+	g.appendLog(message)
 }
 
 func (g *clientGUI) handleTrayError() {
@@ -607,6 +779,7 @@ func (g *clientGUI) handleTrayError() {
 	}
 	setWindowText(g.statusLabel, "托盘不可用")
 	setWindowText(g.detailLabel, detail+" 客户端仍可正常使用，请稍后重试。")
+	g.appendLog(detail)
 }
 
 func (g *clientGUI) stopAgent() {
@@ -648,6 +821,7 @@ func (g *clientGUI) updateConnectButton() {
 func (g *clientGUI) showError(message string) {
 	setWindowText(g.statusLabel, "配置不完整")
 	setWindowText(g.detailLabel, message)
+	g.appendLog(message)
 	messageBox(g.hwnd, message, "Codex Link", win.MB_ICONWARNING|win.MB_OK)
 }
 
@@ -702,8 +876,8 @@ func openAgentGUILog(dataDir string) (*os.File, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("创建客户端数据目录失败: %w", err)
 	}
-	path := filepath.Join(dataDir, "agent-gui.log")
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	path := agentGUILogPath(dataDir)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("创建客户端诊断日志失败: %w", err)
 	}
@@ -712,13 +886,9 @@ func openAgentGUILog(dataDir string) (*os.File, error) {
 
 func agentExitDetail(exitError error, logPath string) string {
 	detail := fmt.Sprintf("后台客户端异常退出: %v", exitError)
-	raw, err := os.ReadFile(logPath)
+	logText, err := readAgentGUILogTail(logPath, 3000)
 	if err != nil {
 		return detail
-	}
-	logText := strings.TrimSpace(string(raw))
-	if len(logText) > 3000 {
-		logText = logText[len(logText)-3000:]
 	}
 	if logText == "" {
 		return detail
