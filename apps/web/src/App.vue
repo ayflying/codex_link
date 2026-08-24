@@ -170,10 +170,15 @@ const groupedSessions = computed(() => {
     if (!groups.has(cwd)) groups.set(cwd, { cwd, label: projectLabel(cwd), sessions: [] });
     groups.get(cwd)!.sessions.push(session);
   }
-  return applyStoredOrder([...groups.values()], projectOrder.value, (group) => group.cwd);
+  const orderedGroups = [...groups.values()].map((group) => ({
+    ...group,
+    sessions: sortSessionsByUpdatedAt(group.sessions)
+  }));
+  orderedGroups.sort((a, b) => compareUpdatedAt(a.sessions[0]?.updatedAt, b.sessions[0]?.updatedAt));
+  return applyStoredOrder(orderedGroups, projectOrder.value, (group) => group.cwd);
 });
 const recentSessions = computed(() => {
-  const recent = sessions.value.filter((session) => !session.cwd);
+  const recent = sortSessionsByUpdatedAt(sessions.value.filter((session) => !session.cwd));
   return applyStoredOrder(recent, recentOrder.value, (session) => session.id);
 });
 const visibleProjectGroups = computed(() => groupedSessions.value.slice(0, visibleProjectCount.value));
@@ -760,6 +765,19 @@ function applyStoredOrder<T>(items: T[], order: string[], key: (item: T) => stri
       return aPosition - bPosition;
     })
     .map(({ item }) => item);
+}
+
+function sortSessionsByUpdatedAt(items: SessionRecord[]) {
+  return [...items].sort((a, b) => compareUpdatedAt(a.updatedAt, b.updatedAt));
+}
+
+function compareUpdatedAt(a?: string, b?: string) {
+  const aTime = Date.parse(a || "");
+  const bTime = Date.parse(b || "");
+  if (!Number.isNaN(aTime) && !Number.isNaN(bTime) && aTime !== bTime) return bTime - aTime;
+  if (!Number.isNaN(aTime) && Number.isNaN(bTime)) return -1;
+  if (Number.isNaN(aTime) && !Number.isNaN(bTime)) return 1;
+  return 0;
 }
 
 function moveItem<T>(items: T[], source: string, target: string, key: (item: T) => string) {
