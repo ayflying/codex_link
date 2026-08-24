@@ -198,8 +198,8 @@ const showStopButton = computed(() => activeSessionRunning.value && !composerHas
 const groupedSessions = computed(() => {
   const groups = new Map<string, { cwd: string; label: string; sessions: SessionRecord[] }>();
   for (const session of sessions.value) {
-    if (!session.cwd) continue;
     const cwd = session.cwd;
+    if (!cwd || isRecentSession(session)) continue;
     if (!groups.has(cwd)) groups.set(cwd, { cwd, label: projectLabel(cwd), sessions: [] });
     groups.get(cwd)!.sessions.push(session);
   }
@@ -211,7 +211,7 @@ const groupedSessions = computed(() => {
   return applyStoredOrder(orderedGroups, projectOrder.value, (group) => group.cwd);
 });
 const recentSessions = computed(() => {
-  const recent = sortSessionsByUpdatedAt(sessions.value.filter((session) => !session.cwd));
+  const recent = sortSessionsByUpdatedAt(sessions.value.filter(isRecentSession));
   return applyStoredOrder(recent, recentOrder.value, (session) => session.id);
 });
 const visibleProjectGroups = computed(() => groupedSessions.value.slice(0, visibleProjectCount.value));
@@ -219,7 +219,7 @@ const visibleRecentSessions = computed(() => recentSessions.value.slice(0, visib
 const hasMoreProjects = computed(() => visibleProjectCount.value < groupedSessions.value.length);
 const hasMoreRecentSessions = computed(() => visibleRecentCount.value < recentSessions.value.length);
 const orderedSessionCount = computed(() => groupedSessions.value.reduce((total, group) => total + group.sessions.length, 0) + recentSessions.value.length);
-const activeProjectCwd = computed(() => activeSession.value?.cwd || "");
+const activeProjectCwd = computed(() => (activeSession.value && !isRecentSession(activeSession.value) ? activeSession.value.cwd || "" : ""));
 const visibleSessionCount = computed(() =>
   visibleProjectGroups.value.reduce((total, group) => total + (isProjectCollapsed(group.cwd) ? 0 : visibleProjectSessions(group).length), 0) + visibleRecentSessions.value.length
 );
@@ -1531,6 +1531,10 @@ function projectLabel(cwd: string) {
   return parts.at(-1) || cwd;
 }
 
+function isRecentSession(session: SessionRecord) {
+  return !session.cwd || projectLabel(session.cwd).toLowerCase() === "new-chat";
+}
+
 function isProjectCollapsed(cwd: string) {
   return collapsedProjects.value.has(cwd);
 }
@@ -2307,7 +2311,7 @@ function transportLabel(status: typeof transportState.value) {
                 </button>
               </article>
             </div>
-            <div v-if="!recentSessions.length" class="sidebar-empty">暂无非项目对话</div>
+            <div v-if="!recentSessions.length" class="sidebar-empty">暂无最近对话</div>
             <button v-if="hasMoreRecentSessions" class="list-more" type="button" @click="showMoreRecentSessions">
               展开更多对话（每次 {{ listPageSize }} 条）
             </button>
