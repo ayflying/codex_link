@@ -60,13 +60,19 @@ type TokenUsage struct {
 }
 
 type ModelOption struct {
-	ID                        string                   `json:"id"`
-	Model                     string                   `json:"model"`
-	DisplayName               string                   `json:"displayName"`
-	Description               string                   `json:"description"`
-	IsDefault                 bool                     `json:"isDefault"`
-	Hidden                    bool                     `json:"hidden"`
-	SupportedReasoningEfforts []map[string]interface{} `json:"supportedReasoningEfforts,omitempty"`
+	ID                        string                  `json:"id"`
+	Model                     string                  `json:"model"`
+	DisplayName               string                  `json:"displayName"`
+	Description               string                  `json:"description"`
+	IsDefault                 bool                    `json:"isDefault"`
+	Hidden                    bool                    `json:"hidden"`
+	DefaultReasoningEffort    string                  `json:"defaultReasoningEffort,omitempty"`
+	SupportedReasoningEfforts []ReasoningEffortOption `json:"supportedReasoningEfforts,omitempty"`
+}
+
+type ReasoningEffortOption struct {
+	ReasoningEffort string `json:"reasoningEffort"`
+	Description     string `json:"description"`
 }
 
 type Event struct {
@@ -129,9 +135,10 @@ type storeFile struct {
 }
 
 type AppSettings struct {
-	ApprovalMode string `json:"approvalMode"`
-	WorkMode     string `json:"workMode"`
-	Model        string `json:"model"`
+	ApprovalMode    string `json:"approvalMode"`
+	WorkMode        string `json:"workMode"`
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoningEffort"`
 }
 
 type Attachment struct {
@@ -187,7 +194,7 @@ func (s *Store) load() {
 		cacheCompacted = cacheCompacted || changed
 	}
 	s.events = file.Events
-	if file.Settings.ApprovalMode != "" || file.Settings.WorkMode != "" || file.Settings.Model != "" {
+	if file.Settings.ApprovalMode != "" || file.Settings.WorkMode != "" || file.Settings.Model != "" || file.Settings.ReasoningEffort != "" {
 		s.settings = normalizeSettings(file.Settings)
 	}
 	for _, event := range s.events {
@@ -797,12 +804,25 @@ func (b *Bridge) ListModels() ([]ModelOption, error) {
 	for _, raw := range data {
 		item := asMap(raw)
 		model := ModelOption{
-			ID:          stringValue(item["id"]),
-			Model:       stringValue(item["model"]),
-			DisplayName: stringValue(item["displayName"]),
-			Description: stringValue(item["description"]),
-			IsDefault:   boolValue(item["isDefault"]),
-			Hidden:      boolValue(item["hidden"]),
+			ID:                     stringValue(item["id"]),
+			Model:                  stringValue(item["model"]),
+			DisplayName:            stringValue(item["displayName"]),
+			Description:            stringValue(item["description"]),
+			IsDefault:              boolValue(item["isDefault"]),
+			Hidden:                 boolValue(item["hidden"]),
+			DefaultReasoningEffort: normalizeReasoningEffort(stringValue(item["defaultReasoningEffort"])),
+		}
+		rawEfforts, _ := item["supportedReasoningEfforts"].([]interface{})
+		for _, rawEffort := range rawEfforts {
+			effort := asMap(rawEffort)
+			value := normalizeReasoningEffort(stringValue(effort["reasoningEffort"]))
+			if value == "" {
+				continue
+			}
+			model.SupportedReasoningEfforts = append(model.SupportedReasoningEfforts, ReasoningEffortOption{
+				ReasoningEffort: value,
+				Description:     stringValue(effort["description"]),
+			})
 		}
 		if model.Model == "" {
 			model.Model = model.ID
@@ -998,7 +1018,7 @@ func (b *Bridge) SendMessage(text, sessionID string, attachments []Attachment) e
 		"threadId": threadID,
 		"input":    input,
 	}, settings)
-	result, err := b.request("turn/start", withModelOption(params, settings))
+	result, err := b.request("turn/start", withTurnOptions(params, settings))
 	if err != nil {
 		return err
 	}
@@ -1604,7 +1624,7 @@ func timestampToISO(value interface{}) string {
 }
 
 func defaultSettings() AppSettings {
-	return AppSettings{ApprovalMode: "on-request", WorkMode: "edit", Model: ""}
+	return AppSettings{ApprovalMode: "on-request", WorkMode: "edit", Model: "", ReasoningEffort: ""}
 }
 
 func normalizeSettings(settings AppSettings) AppSettings {
@@ -1615,7 +1635,17 @@ func normalizeSettings(settings AppSettings) AppSettings {
 		settings.WorkMode = "edit"
 	}
 	settings.Model = strings.TrimSpace(settings.Model)
+	settings.ReasoningEffort = normalizeReasoningEffort(settings.ReasoningEffort)
 	return settings
+}
+
+func normalizeReasoningEffort(value string) string {
+	switch strings.TrimSpace(value) {
+	case "minimal", "low", "medium", "high", "xhigh":
+		return strings.TrimSpace(value)
+	default:
+		return ""
+	}
 }
 
 func developerInstructions(settings AppSettings) string {
@@ -1655,6 +1685,14 @@ func withRuntimeOptions(params map[string]interface{}, settings AppSettings) map
 func withModelOption(params map[string]interface{}, settings AppSettings) map[string]interface{} {
 	if model := strings.TrimSpace(settings.Model); model != "" {
 		params["model"] = model
+	}
+	return params
+}
+
+func withTurnOptions(params map[string]interface{}, settings AppSettings) map[string]interface{} {
+	params = withModelOption(params, settings)
+	if effort := normalizeReasoningEffort(settings.ReasoningEffort); effort != "" {
+		params["effort"] = effort
 	}
 	return params
 }

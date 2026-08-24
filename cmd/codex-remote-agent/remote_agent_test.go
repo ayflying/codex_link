@@ -414,6 +414,41 @@ func TestWithModelOption(t *testing.T) {
 	}
 }
 
+func TestWithTurnOptionsIncludesValidatedReasoningEffort(t *testing.T) {
+	params := withTurnOptions(map[string]interface{}{}, AppSettings{Model: " gpt-5-codex ", ReasoningEffort: " high "})
+	if params["model"] != "gpt-5-codex" || params["effort"] != "high" {
+		t.Fatalf("expected model and effort options, got %#v", params)
+	}
+
+	params = withTurnOptions(map[string]interface{}{}, AppSettings{ReasoningEffort: "unsupported"})
+	if _, ok := params["effort"]; ok {
+		t.Fatalf("unsupported effort should not be sent: %#v", params)
+	}
+}
+
+func TestNormalizeSettingsReasoningEffort(t *testing.T) {
+	settings := normalizeSettings(AppSettings{ApprovalMode: "on-request", WorkMode: "edit", ReasoningEffort: "xhigh"})
+	if settings.ReasoningEffort != "xhigh" {
+		t.Fatalf("expected xhigh effort, got %#v", settings)
+	}
+
+	settings = normalizeSettings(AppSettings{ApprovalMode: "on-request", WorkMode: "edit", ReasoningEffort: "invalid"})
+	if settings.ReasoningEffort != "" {
+		t.Fatalf("invalid effort should fall back to default, got %#v", settings)
+	}
+}
+
+func TestStorePersistsReasoningEffort(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	store.UpdateSettings(AppSettings{ApprovalMode: "on-request", WorkMode: "edit", Model: "gpt-5-codex", ReasoningEffort: "high"})
+
+	reloaded := NewStore(dir).Settings()
+	if reloaded.Model != "gpt-5-codex" || reloaded.ReasoningEffort != "high" {
+		t.Fatalf("reasoning effort was not persisted: %#v", reloaded)
+	}
+}
+
 func TestMessageInputKeepsNativeTextImageAndFileTypes(t *testing.T) {
 	input := messageInput("  请分析附件  ", []Attachment{
 		{Name: "截图.png", MimeType: "image/png", Path: `C:\tmp\截图.png`},

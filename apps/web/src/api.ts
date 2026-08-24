@@ -122,6 +122,14 @@ export type AppSettings = {
   approvalMode: "on-request" | "on-failure" | "never";
   workMode: "edit" | "plan";
   model: string;
+  reasoningEffort: ReasoningEffort;
+};
+
+export type ReasoningEffort = "" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+export type ReasoningEffortOption = {
+  reasoningEffort: Exclude<ReasoningEffort, "">;
+  description: string;
 };
 
 export type ModelOption = {
@@ -131,6 +139,8 @@ export type ModelOption = {
   description: string;
   isDefault: boolean;
   hidden?: boolean;
+  defaultReasoningEffort?: ReasoningEffort;
+  supportedReasoningEfforts?: ReasoningEffortOption[];
 };
 
 export type Attachment = {

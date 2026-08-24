@@ -64,12 +64,19 @@ type TokenUsage struct {
 }
 
 type ModelOption struct {
-	ID          string `json:"id"`
-	Model       string `json:"model"`
-	DisplayName string `json:"displayName"`
-	Description string `json:"description"`
-	IsDefault   bool   `json:"isDefault"`
-	Hidden      bool   `json:"hidden"`
+	ID                        string                  `json:"id"`
+	Model                     string                  `json:"model"`
+	DisplayName               string                  `json:"displayName"`
+	Description               string                  `json:"description"`
+	IsDefault                 bool                    `json:"isDefault"`
+	Hidden                    bool                    `json:"hidden"`
+	DefaultReasoningEffort    string                  `json:"defaultReasoningEffort,omitempty"`
+	SupportedReasoningEfforts []ReasoningEffortOption `json:"supportedReasoningEfforts,omitempty"`
+}
+
+type ReasoningEffortOption struct {
+	ReasoningEffort string `json:"reasoningEffort"`
+	Description     string `json:"description"`
 }
 
 type Event struct {
@@ -123,9 +130,10 @@ type Attachment struct {
 }
 
 type AppSettings struct {
-	ApprovalMode string `json:"approvalMode"`
-	WorkMode     string `json:"workMode"`
-	Model        string `json:"model"`
+	ApprovalMode    string `json:"approvalMode"`
+	WorkMode        string `json:"workMode"`
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoningEffort"`
 }
 
 type envelope struct {
