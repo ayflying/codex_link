@@ -51,7 +51,7 @@ http://<服务端地址>:18787
 .\scripts\publish-relay.ps1
 ```
 
-脚本使用通过 `-Remote` 或 `CODEX_LINK_BUILD_SERVER` 指定的远程构建服务器，并复用该服务器上的 Docker/GHCR 登录状态；也可以通过 `CODEX_LINK_GHCR_TOKEN` 临时登录 GHCR。脚本会推送 `ghcr.io/ayflying/codex_link:<VERSION>` 和 `ghcr.io/ayflying/codex_link:latest`。Compose 默认使用 `latest`；需要固定或跳转版本时，将 `docker-compose.yml` 中的镜像标签改为对应版本号。临时不发布镜像时设置 `CODEX_LINK_SKIP_IMAGE_PUBLISH=1`。
+脚本使用通过 `-Remote`、`CODEX_LINK_BUILD_SERVER` 或本地 Git 配置指定的远程构建服务器，并复用该服务器上的 Docker/GHCR 登录状态；也可以通过 `CODEX_LINK_GHCR_TOKEN` 临时登录 GHCR。为让提交钩子自动发布而不把服务器地址写入仓库，可执行 `git config --local codex-link.build-server root@<构建服务器>`。脚本会推送 `ghcr.io/ayflying/codex_link:<VERSION>` 和 `ghcr.io/ayflying/codex_link:latest`。Compose 默认使用 `latest`；需要固定或跳转版本时，将 `docker-compose.yml` 中的镜像标签改为对应版本号。临时不发布镜像时设置 `CODEX_LINK_SKIP_IMAGE_PUBLISH=1`。
 
 MySQL 只通过 Compose 内部网络提供给 relay，不对外暴露端口。首次注册完成后，建议在 `.env` 中设置 `ALLOW_REGISTRATION=false`，再执行一次：
 

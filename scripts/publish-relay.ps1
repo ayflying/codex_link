@@ -8,10 +8,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-if ([string]::IsNullOrWhiteSpace($Remote)) {
-  throw "请通过 -Remote 或 CODEX_LINK_BUILD_SERVER 指定远程构建服务器"
-}
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+if ([string]::IsNullOrWhiteSpace($Remote)) {
+  $Remote = [string](& git -C $root config --get codex-link.build-server 2>$null).Trim()
+}
+if ([string]::IsNullOrWhiteSpace($Remote)) {
+  throw "请通过 -Remote、CODEX_LINK_BUILD_SERVER 或本地 Git 配置 codex-link.build-server 指定远程构建服务器"
+}
 $versionPath = Join-Path $root "VERSION"
 $version = (Get-Content -LiteralPath $versionPath -Raw).Trim()
 if ($version -notmatch '^\d+\.\d+\.\d+$') {
