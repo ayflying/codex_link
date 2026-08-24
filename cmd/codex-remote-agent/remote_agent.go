@@ -348,9 +348,10 @@ func (a *remoteAgent) executeCommand(action string, payload json.RawMessage) (in
 	case "sessions.create":
 		var body struct {
 			Prompt string `json:"prompt"`
+			Cwd    string `json:"cwd"`
 		}
 		_ = json.Unmarshal(payload, &body)
-		session, err := a.bridge.CreateSession(strings.TrimSpace(body.Prompt))
+		session, err := a.bridge.CreateSession(strings.TrimSpace(body.Prompt), strings.TrimSpace(body.Cwd))
 		if err != nil {
 			return nil, err
 		}

@@ -304,10 +304,10 @@ export async function deleteDevice(deviceId: string) {
   return request<{ ok: boolean }>(`/api/devices/${encodeURIComponent(deviceId)}`, { method: "DELETE" });
 }
 
-export async function createSession(prompt?: string, deviceId?: string) {
+export async function createSession(prompt?: string, deviceId?: string, cwd?: string) {
   return request<{ session: SessionRecord }>(withDevice("/api/sessions", deviceId), {
     method: "POST",
-    body: JSON.stringify({ prompt })
+    body: JSON.stringify({ prompt, cwd })
   });
 }
 

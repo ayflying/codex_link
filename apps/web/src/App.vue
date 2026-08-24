@@ -154,10 +154,10 @@ const streamState = ref<"idle" | "connected" | "reconnecting">("idle");
 const transportState = ref<"idle" | "connecting" | "p2p" | "relay" | "failed">("idle");
 const transcriptEl = ref<HTMLElement | null>(null);
 const historySentinelEl = ref<HTMLElement | null>(null);
-const sessionListEl = ref<HTMLElement | null>(null);
 const renderLimit = ref(160);
 const forceScrollToBottom = ref(false);
 const sidebarOpen = ref(false);
+const selectedProjectCwd = ref("");
 const collapsedProjects = ref<Set<string>>(new Set());
 const listPageSize = 6;
 const visibleProjectCount = ref(listPageSize);
@@ -319,14 +319,6 @@ watch(() => events.value.length, async () => {
   if (!nearBottom) return;
   element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
 });
-
-watch(
-  () => [groupedSessions.value.length, recentSessions.value.length, visibleProjectCount.value, visibleRecentCount.value, JSON.stringify(visibleProjectSessionCounts.value)],
-  async () => {
-    await nextTick();
-    loadSidebarAtViewport();
-  }
-);
 
 async function refresh() {
   if (!auth.value.authenticated) return;
@@ -643,6 +635,7 @@ async function selectDevice(device: RemoteDevice) {
   if (!device.online) return;
   activeDeviceId.value = device.id;
   activeSessionId.value = "";
+  selectedProjectCwd.value = "";
   events.value = [];
   sidebarOpen.value = false;
   await refresh();
@@ -669,6 +662,7 @@ function backToDevices() {
   eventSource.value = null;
   activeDeviceId.value = "";
   activeSessionId.value = "";
+  selectedProjectCwd.value = "";
   events.value = [];
   sessions.value = [];
   streamState.value = "idle";
@@ -918,10 +912,11 @@ async function startSession() {
   loading.value = true;
   error.value = "";
   try {
+    const cwd = selectedProjectCwd.value || undefined;
     const { session } = await commandWithFallback(
       "sessions.create",
-      {},
-      () => createSession(undefined, activeDeviceId.value)
+      { cwd },
+      () => createSession(undefined, activeDeviceId.value, cwd)
     );
     upsertSession(session);
     activeSessionId.value = session.id;
@@ -945,6 +940,7 @@ async function openThread(session: SessionRecord) {
       () => resumeThread(session.id)
     );
     upsertSession(resumed);
+    selectedProjectCwd.value = isRecentSession(resumed) ? "" : resumed.cwd || "";
     forceScrollToBottom.value = true;
     activeSessionId.value = resumed.id;
 		if (resumed.mode === "host-readonly") {
@@ -1636,35 +1632,6 @@ function showMoreProjectSessions(cwd: string) {
   };
 }
 
-function isLazyLoadSentinelReached(container: HTMLElement, selector: string) {
-  const containerRect = container.getBoundingClientRect();
-  return [...container.querySelectorAll<HTMLElement>(selector)].find((element) => {
-    const rect = element.getBoundingClientRect();
-    return rect.top <= containerRect.bottom + 72 && rect.bottom >= containerRect.top - 72;
-  });
-}
-
-function loadSidebarAtViewport(container = sessionListEl.value) {
-  if (!container) return;
-  const projectSessionSentinel = isLazyLoadSentinelReached(container, "[data-lazy-project-sessions]");
-  if (projectSessionSentinel) {
-    const cwd = projectSessionSentinel.dataset.lazyProjectSessions;
-    if (cwd) showMoreProjectSessions(cwd);
-    return;
-  }
-  if (hasMoreProjects.value && isLazyLoadSentinelReached(container, "[data-lazy-projects]")) {
-    showMoreProjects();
-    return;
-  }
-  if (hasMoreRecentSessions.value && isLazyLoadSentinelReached(container, "[data-lazy-recent]")) {
-    showMoreRecentSessions();
-  }
-}
-
-function onSidebarScroll(event: Event) {
-  loadSidebarAtViewport(event.currentTarget as HTMLElement);
-}
-
 function armHistoryLoad() {
   historyScrollArmed = true;
 }
@@ -1674,6 +1641,11 @@ function onTranscriptScroll() {
   if (!historyScrollArmed || historyObserver || !element || element.scrollTop > 160) return;
   historyScrollArmed = false;
   void loadOlderEvents();
+}
+
+function selectProject(cwd: string) {
+  selectedProjectCwd.value = selectedProjectCwd.value === cwd ? "" : cwd;
+  toggleProject(cwd);
 }
 
 function toggleProject(cwd: string) {
@@ -1688,11 +1660,15 @@ function expandAllProjects() {
 }
 
 function collapseProjectsByDefault() {
-  collapsedProjects.value = new Set(groupedSessions.value.map((group) => group.cwd));
+  const available = new Set(groupedSessions.value.map((group) => group.cwd));
+  if (selectedProjectCwd.value && !available.has(selectedProjectCwd.value)) selectedProjectCwd.value = "";
+  collapsedProjects.value = new Set(
+    groupedSessions.value.map((group) => group.cwd).filter((cwd) => cwd !== selectedProjectCwd.value)
+  );
 }
 
 function collapseOtherProjects() {
-  const keepOpen = activeProjectCwd.value || groupedSessions.value[0]?.cwd || "";
+  const keepOpen = selectedProjectCwd.value || activeProjectCwd.value || groupedSessions.value[0]?.cwd || "";
   collapsedProjects.value = new Set(
     groupedSessions.value.map((group) => group.cwd).filter((cwd) => cwd !== keepOpen)
   );
@@ -2330,7 +2306,7 @@ function transportLabel(status: typeof transportState.value) {
           <button type="button" @click="collapseOtherProjects">折叠其它</button>
           <span>{{ visibleSessionCount }} / {{ sessions.length }}</span>
         </div>
-        <div ref="sessionListEl" class="session-list" aria-label="Sessions" @scroll.passive="onSidebarScroll">
+        <div class="session-list" aria-label="Sessions">
           <section class="sidebar-section">
             <div class="sidebar-section-heading">
               <span><Folder :size="15" />项目</span>
@@ -2351,12 +2327,12 @@ function transportLabel(status: typeof transportState.value) {
                     type="button"
                     :title="group.cwd"
                     :aria-expanded="!isProjectCollapsed(group.cwd)"
-                    @click="toggleProject(group.cwd)"
+                    :class="{ selected: selectedProjectCwd === group.cwd }"
+                    @click="selectProject(group.cwd)"
                   >
                     <ChevronRight v-if="isProjectCollapsed(group.cwd)" :size="16" />
                     <ChevronDown v-else :size="16" />
                     <span>{{ group.label }}</span>
-                    <small>{{ group.sessions.length }} 条</small>
                   </button>
                   <span
                     class="drag-handle project-drag-handle"
@@ -2381,11 +2357,16 @@ function transportLabel(status: typeof transportState.value) {
                     <Trash2 :size="15" />
                   </button>
                 </article>
-                <div v-if="!isProjectCollapsed(group.cwd) && hasMoreProjectSessions(group)" class="lazy-load-sentinel" :data-lazy-project-sessions="group.cwd" aria-hidden="true" />
+                <button
+                  v-if="!isProjectCollapsed(group.cwd) && hasMoreProjectSessions(group)"
+                  class="sidebar-load-more"
+                  type="button"
+                  @click="showMoreProjectSessions(group.cwd)"
+                >加载更多对话</button>
               </section>
             </div>
             <div v-if="!groupedSessions.length" class="sidebar-empty">还没有项目对话</div>
-            <div v-if="hasMoreProjects" class="lazy-load-sentinel" data-lazy-projects="true" aria-hidden="true" />
+            <button v-if="hasMoreProjects" class="sidebar-load-more" type="button" @click="showMoreProjects">加载更多项目</button>
           </section>
 
           <section class="sidebar-section recent-section">
@@ -2415,7 +2396,7 @@ function transportLabel(status: typeof transportState.value) {
               </article>
             </div>
             <div v-if="!recentSessions.length" class="sidebar-empty">暂无最近对话</div>
-            <div v-if="hasMoreRecentSessions" class="lazy-load-sentinel" data-lazy-recent="true" aria-hidden="true" />
+            <button v-if="hasMoreRecentSessions" class="sidebar-load-more" type="button" @click="showMoreRecentSessions">加载更多对话</button>
           </section>
         </div>
       </aside>

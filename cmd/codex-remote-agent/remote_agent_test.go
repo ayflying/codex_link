@@ -509,3 +509,65 @@ func TestStoreKeepsSessionModelAndTokenUsageWhenThreadListOmitsMetadata(t *testi
 		t.Fatalf("session metadata was lost: %#v", sessions[0])
 	}
 }
+
+func TestRemoteAgentCreateSessionUsesSelectedProjectCwd(t *testing.T) {
+	store := NewStore(t.TempDir())
+	const projectCwd = `D:\git\project-a`
+	var threadStartCwd string
+	bridge := &Bridge{
+		cmd:         &exec.Cmd{},
+		initialized: true,
+		cwd:         `D:\git\default-workspace`,
+		store:       store,
+		requestHook: func(method string, params interface{}) (interface{}, error) {
+			if method != "thread/start" {
+				t.Fatalf("unexpected app-server request: %s", method)
+			}
+			threadStartCwd = stringValue(params.(map[string]interface{})["cwd"])
+			return map[string]interface{}{
+				"thread": map[string]interface{}{"id": "thread-project"},
+				"model":  "gpt-5-codex",
+			}, nil
+		},
+	}
+	agent := &remoteAgent{store: store, bridge: bridge}
+	payload, _ := json.Marshal(map[string]string{"cwd": projectCwd})
+	result, err := agent.executeCommand("sessions.create", payload)
+	if err != nil {
+		t.Fatalf("create project session: %v", err)
+	}
+	session := result.(map[string]interface{})["session"].(Session)
+	if threadStartCwd != projectCwd || session.Cwd != projectCwd {
+		t.Fatalf("project cwd was not propagated: start=%q session=%q", threadStartCwd, session.Cwd)
+	}
+}
+
+func TestBridgeCreateSessionWithoutProjectStaysRecentAfterThreadSync(t *testing.T) {
+	store := NewStore(t.TempDir())
+	const defaultCwd = `D:\git\default-workspace`
+	var threadStartCwd string
+	bridge := &Bridge{
+		cmd:         &exec.Cmd{},
+		initialized: true,
+		cwd:         defaultCwd,
+		store:       store,
+		requestHook: func(method string, params interface{}) (interface{}, error) {
+			if method != "thread/start" {
+				t.Fatalf("unexpected app-server request: %s", method)
+			}
+			threadStartCwd = stringValue(params.(map[string]interface{})["cwd"])
+			return map[string]interface{}{"thread": map[string]interface{}{"id": "thread-recent"}}, nil
+		},
+	}
+	session, err := bridge.CreateSession("", "")
+	if err != nil {
+		t.Fatalf("create recent session: %v", err)
+	}
+	if threadStartCwd != defaultCwd || session.Cwd != "new-chat" {
+		t.Fatalf("unexpected recent session cwd: start=%q session=%q", threadStartCwd, session.Cwd)
+	}
+	synced := store.EnrichSession(Session{ID: session.ID, Cwd: defaultCwd})
+	if synced.Cwd != "new-chat" {
+		t.Fatalf("thread sync should preserve recent classification, got %q", synced.Cwd)
+	}
+}

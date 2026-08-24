@@ -589,18 +589,19 @@ button:disabled { cursor: not-allowed; opacity: 0.5; transform: none !important;
 .project-list, .recent-list { display: grid; gap: 4px; }
 .session-project-group { display: grid; gap: 3px; }
 .project-heading-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 28px; align-items: center; gap: 2px; }
-.project-heading { min-width: 0; min-height: 28px; padding: 0 4px; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 6px; border-radius: 4px; background: transparent; color: #bdd0dc; cursor: pointer; text-align: left; }
+.project-heading { min-width: 0; min-height: 28px; padding: 0 4px; display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 6px; border-radius: 4px; background: transparent; color: #bdd0dc; cursor: pointer; text-align: left; }
 .project-heading:hover { background: rgba(255, 255, 255, 0.07); }
+.project-heading.selected { background: rgba(26, 169, 157, 0.16); box-shadow: inset 2px 0 0 #71dfd2; color: #eaf8f5; }
 .project-heading svg { color: #71dfd2; }
-.project-heading span, .project-heading small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-heading span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-heading span { font-size: 12px; font-weight: 700; }
-.project-heading small { color: #7f9aad; font-size: 11px; }
 .drag-handle { display: inline-grid; place-items: center; color: #6e858e; cursor: grab; opacity: 0.7; }
 .drag-handle:hover { color: #71dfd2; opacity: 1; }
 .drag-handle:active { cursor: grabbing; }
 .session-project-group.drag-over > .project-heading-row, .recent-session-pill.drag-over { border-radius: 5px; outline: 1px dashed #63d6c8; outline-offset: 2px; }
 .sidebar-empty { padding: 6px 4px; color: #718992; font-size: 11px; }
-.lazy-load-sentinel { width: 100%; height: 1px; pointer-events: none; }
+.sidebar-load-more { width: 100%; min-height: 30px; padding: 0 8px; border: 1px solid rgba(215, 232, 242, 0.13); border-radius: 4px; background: rgba(255, 255, 255, 0.045); color: #9fb7c3; cursor: pointer; font-size: 11px; text-align: left; }
+.sidebar-load-more:hover { border-color: rgba(113, 223, 210, 0.32); background: rgba(113, 223, 210, 0.1); color: #d8f5ef; }
 
 .session-pill { min-height: 32px; display: grid; grid-template-columns: minmax(0, 1fr) 28px; align-items: center; border-radius: 4px; background: transparent; color: #dcebf1; transition: background-color 140ms ease; }
 .session-pill:hover { background: rgba(255, 255, 255, 0.075); }

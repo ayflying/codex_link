@@ -1506,12 +1506,13 @@ func (s *relayServer) sessions(w http.ResponseWriter, request *http.Request) {
 		}
 		var body struct {
 			Prompt string `json:"prompt"`
+			Cwd    string `json:"cwd"`
 		}
 		if err := decodeJSON(request, &body); err != nil {
 			writeErrorStatus(w, http.StatusBadRequest, "请求格式不正确")
 			return
 		}
-		result, err := s.command(user.ID, deviceID, "sessions.create", map[string]string{"prompt": body.Prompt})
+		result, err := s.command(user.ID, deviceID, "sessions.create", map[string]string{"prompt": body.Prompt, "cwd": body.Cwd})
 		if err != nil {
 			writeErrorStatus(w, http.StatusBadGateway, err.Error())
 			return

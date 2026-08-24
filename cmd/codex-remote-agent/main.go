@@ -265,6 +265,9 @@ func mergeSessionMetadata(existing, incoming Session) Session {
 	if incoming.TokenUsage == nil {
 		incoming.TokenUsage = existing.TokenUsage
 	}
+	if existing.Cwd == "new-chat" && incoming.Cwd != "" {
+		incoming.Cwd = existing.Cwd
+	}
 	return incoming
 }
 
@@ -938,7 +941,14 @@ func (b *Bridge) ArchiveThread(threadID string) error {
 	return nil
 }
 
-func (b *Bridge) CreateSession(prompt string) (Session, error) {
+func (b *Bridge) CreateSession(prompt, requestedCwd string) (Session, error) {
+	requestedCwd = strings.TrimSpace(requestedCwd)
+	threadCwd := b.cwd
+	sessionCwd := "new-chat"
+	if requestedCwd != "" {
+		threadCwd = requestedCwd
+		sessionCwd = requestedCwd
+	}
 	now := time.Now().Format(time.RFC3339)
 	session := Session{
 		ID:        randomID(),
@@ -947,7 +957,7 @@ func (b *Bridge) CreateSession(prompt string) (Session, error) {
 		Status:    "idle",
 		CreatedAt: now,
 		UpdatedAt: now,
-		Cwd:       b.cwd,
+		Cwd:       sessionCwd,
 		Note:      "当前没有稳定公开的 Codex 桌面任务附着接口，已降级为宿主机新建会话。",
 	}
 	if strings.TrimSpace(prompt) != "" {
@@ -959,7 +969,7 @@ func (b *Bridge) CreateSession(prompt string) (Session, error) {
 	if err := b.ensureReady(); err != nil {
 		return Session{}, err
 	}
-	if err := b.startCodexThread(); err != nil {
+	if err := b.startCodexThread(threadCwd); err != nil {
 		return Session{}, err
 	}
 	b.mu.Lock()
@@ -975,10 +985,10 @@ func (b *Bridge) CreateSession(prompt string) (Session, error) {
 	return session, nil
 }
 
-func (b *Bridge) startCodexThread() error {
+func (b *Bridge) startCodexThread(cwd string) error {
 	settings := b.store.Settings()
 	params := withRuntimeOptions(map[string]interface{}{
-		"cwd":                   b.cwd,
+		"cwd":                   cwd,
 		"developerInstructions": developerInstructions(settings),
 	}, settings)
 	result, err := b.request("thread/start", withModelOption(params, settings))
@@ -1050,7 +1060,7 @@ func (b *Bridge) ensureSession(sessionID string) error {
 		}
 		return nil
 	}
-	_, err := b.CreateSession("")
+	_, err := b.CreateSession("", "")
 	return err
 }
 
