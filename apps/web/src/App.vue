@@ -1905,6 +1905,17 @@ function eventHtml(event: RemoteEvent) {
   return markdownToHtml(eventText(event));
 }
 
+function isCollapsibleEvent(event: RemoteEvent) {
+  return event.type === "tool.started" || event.type === "tool.output";
+}
+
+function eventPreview(event: RemoteEvent) {
+  const text = eventText(event).replace(/\s+/g, " ").trim();
+  if (!text) return eventLabel(event);
+  if (text.length <= 140) return text;
+  return `${text.slice(0, 140)}...`;
+}
+
 function markdownToHtml(markdown: string) {
   return DOMPurify.sanitize(markdownRenderer.render(markdown), {
     USE_PROFILES: { html: true }
@@ -2564,17 +2575,25 @@ function transportLabel(status: typeof transportState.value) {
 
           <section ref="transcriptEl" class="transcript" tabindex="0" @wheel.passive="armHistoryLoad" @touchstart.passive="armHistoryLoad" @pointerdown.passive="armHistoryLoad" @scroll.passive="onTranscriptScroll">
             <div v-if="hasEarlierEvents" ref="historySentinelEl" class="history-load-sentinel" :aria-busy="historyLoading" aria-live="polite" />
-            <article
-        v-for="event in visibleEvents"
-        :key="event.id"
-        class="event-block timeline-event"
-        :class="[eventClass(event), { pending: pendingApprovals.has(String(event.payload.approvalId || event.id)) }]"
-      >
-        <div class="event-meta">
-          <time>{{ formatTime(event.ts) }}</time>
-          <span>{{ eventLabel(event) }}</span>
-        </div>
-        <div class="markdown-body" v-html="eventHtml(event)" />
+            <template v-for="event in visibleEvents" :key="event.id">
+              <details v-if="isCollapsibleEvent(event)" class="event-block timeline-event collapsible-event" :class="eventClass(event)">
+                <summary class="event-meta tool-event-summary">
+                  <time>{{ formatTime(event.ts) }}</time>
+                  <span>{{ eventLabel(event) }}</span>
+                  <small>{{ eventPreview(event) }}</small>
+                </summary>
+                <div class="markdown-body" v-html="eventHtml(event)" />
+              </details>
+              <article
+                v-else
+                class="event-block timeline-event"
+                :class="[eventClass(event), { pending: pendingApprovals.has(String(event.payload.approvalId || event.id)) }]"
+              >
+                <div class="event-meta">
+                  <time>{{ formatTime(event.ts) }}</time>
+                  <span>{{ eventLabel(event) }}</span>
+                </div>
+                <div class="markdown-body" v-html="eventHtml(event)" />
         <div v-if="event.type === 'approval.requested' && pendingApprovals.has(String(event.payload.approvalId || event.id))" class="approval-actions">
           <button class="primary icon-text" type="button" @click="approve(event, 'approved')">
             <Check :size="18" />
@@ -2615,7 +2634,8 @@ function transportLabel(status: typeof transportState.value) {
             <span>提交选择</span>
           </button>
         </div>
-            </article>
+              </article>
+            </template>
           </section>
         </section>
 
