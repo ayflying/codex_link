@@ -45,3 +45,24 @@ func TestSplitMigrationStatements(t *testing.T) {
 		t.Fatalf("unexpected split statements: %#v", statements)
 	}
 }
+
+func TestRelayStoreCompactsOversizedToolOutput(t *testing.T) {
+	store := newRelayStore(t.TempDir())
+	stored := store.appendEvent("user", "device", Event{
+		SessionID: "thread",
+		Type:      "tool.output",
+		Payload:   map[string]interface{}{"text": strings.Repeat("界", maxRelayedToolOutputBytes)},
+	})
+	text := stored.Payload["text"].(string)
+	if len(text) > maxRelayedToolOutputBytes || !strings.HasSuffix(text, relayedToolOutputTruncatedNote) {
+		t.Fatalf("stored output was not compacted: bytes=%d", len(text))
+	}
+	if !stored.Payload["truncated"].(bool) {
+		t.Fatalf("compacted event should be marked: %#v", stored.Payload)
+	}
+
+	history := store.eventsForUser("user", "thread", 0, 6)
+	if len(history) != 1 || len(history[0].Payload["text"].(string)) > maxRelayedToolOutputBytes {
+		t.Fatalf("history returned oversized output: %#v", history)
+	}
+}

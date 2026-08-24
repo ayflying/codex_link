@@ -25,6 +25,11 @@ const baseDeveloperInstructions = "请全程使用中文与用户交流。除非
 
 const readOnlyThreadNote = "该对话正在由本机 Codex 使用，当前仅可查看历史。"
 
+const (
+	maxStoredToolOutputBytes = 64 * 1024
+	toolOutputTruncatedNote  = "\n\n[工具输出过长，已截断。]"
+)
+
 var errThreadReadOnly = errors.New("该对话正在由本机 Codex 使用，当前仅可查看历史")
 
 type Session struct {
@@ -70,6 +75,39 @@ type Event struct {
 	Type      string                 `json:"type"`
 	TS        string                 `json:"ts"`
 	Payload   map[string]interface{} `json:"payload"`
+}
+
+func compactStoredEvent(event Event) (Event, bool) {
+	if event.Type != "tool.output" || event.Payload == nil {
+		return event, false
+	}
+	text, ok := event.Payload["text"].(string)
+	if !ok || len(text) <= maxStoredToolOutputBytes {
+		return event, false
+	}
+	payload := make(map[string]interface{}, len(event.Payload)+1)
+	for key, value := range event.Payload {
+		payload[key] = value
+	}
+	limit := maxStoredToolOutputBytes - len(toolOutputTruncatedNote)
+	payload["text"] = truncateUTF8Bytes(text, limit) + toolOutputTruncatedNote
+	payload["truncated"] = true
+	event.Payload = payload
+	return event, true
+}
+
+func truncateUTF8Bytes(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	if limit <= 0 {
+		return ""
+	}
+	end := limit
+	for end > 0 && text[end]&0xc0 == 0x80 {
+		end--
+	}
+	return text[:end]
 }
 
 type Store struct {
@@ -142,6 +180,12 @@ func (s *Store) load() {
 	for _, session := range file.Sessions {
 		s.sessions[session.ID] = session
 	}
+	cacheCompacted := false
+	for index, event := range file.Events {
+		compacted, changed := compactStoredEvent(event)
+		file.Events[index] = compacted
+		cacheCompacted = cacheCompacted || changed
+	}
 	s.events = file.Events
 	if file.Settings.ApprovalMode != "" || file.Settings.WorkMode != "" || file.Settings.Model != "" {
 		s.settings = normalizeSettings(file.Settings)
@@ -150,6 +194,9 @@ func (s *Store) load() {
 		if event.ID > s.nextID {
 			s.nextID = event.ID
 		}
+	}
+	if cacheCompacted {
+		s.persistLocked()
 	}
 }
 
@@ -293,7 +340,8 @@ func (s *Store) EventsBefore(sessionID string, before int64, limit int) ([]Event
 		if event.SessionID != sessionID || (before > 0 && event.ID >= before) {
 			continue
 		}
-		events = append(events, event)
+		compacted, _ := compactStoredEvent(event)
+		events = append(events, compacted)
 	}
 	if len(events) <= limit {
 		return events, false
@@ -302,6 +350,7 @@ func (s *Store) EventsBefore(sessionID string, before int64, limit int) ([]Event
 }
 
 func (s *Store) Append(event Event) Event {
+	event, _ = compactStoredEvent(event)
 	s.mu.Lock()
 	s.nextID++
 	event.ID = s.nextID
@@ -319,6 +368,7 @@ func (s *Store) Append(event Event) Event {
 }
 
 func (s *Store) AppendLocal(event Event) Event {
+	event, _ = compactStoredEvent(event)
 	s.mu.Lock()
 	s.nextID++
 	event.ID = s.nextID
@@ -338,6 +388,7 @@ func (s *Store) AppendLocalBatch(events []Event) []Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for index := range events {
+		events[index], _ = compactStoredEvent(events[index])
 		s.nextID++
 		events[index].ID = s.nextID
 		s.events = append(s.events, events[index])

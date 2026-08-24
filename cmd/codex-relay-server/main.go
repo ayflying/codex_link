@@ -30,8 +30,11 @@ const (
 	passwordIterations        = 120000
 	defaultEventBacklog       = 6
 	maxAttachmentBytes        = 16 * 1024 * 1024
+	maxRelayedToolOutputBytes = 64 * 1024
 	defaultRequestTimeoutSecs = 35
 )
+
+const relayedToolOutputTruncatedNote = "\n\n[工具输出过长，已截断。]"
 
 type Session struct {
 	ID         string      `json:"id"`
@@ -75,6 +78,39 @@ type Event struct {
 	Type      string                 `json:"type"`
 	TS        string                 `json:"ts"`
 	Payload   map[string]interface{} `json:"payload"`
+}
+
+func compactRelayedEvent(event Event) Event {
+	if event.Type != "tool.output" || event.Payload == nil {
+		return event
+	}
+	text, ok := event.Payload["text"].(string)
+	if !ok || len(text) <= maxRelayedToolOutputBytes {
+		return event
+	}
+	payload := make(map[string]interface{}, len(event.Payload)+1)
+	for key, value := range event.Payload {
+		payload[key] = value
+	}
+	limit := maxRelayedToolOutputBytes - len(relayedToolOutputTruncatedNote)
+	payload["text"] = truncateRelayedUTF8Bytes(text, limit) + relayedToolOutputTruncatedNote
+	payload["truncated"] = true
+	event.Payload = payload
+	return event
+}
+
+func truncateRelayedUTF8Bytes(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	if limit <= 0 {
+		return ""
+	}
+	end := limit
+	for end > 0 && text[end]&0xc0 == 0x80 {
+		end--
+	}
+	return text[:end]
 }
 
 type Attachment struct {
@@ -460,6 +496,7 @@ func (s *relayStore) sessionsForUser(userID, deviceID string) []Session {
 }
 
 func (s *relayStore) appendEvent(userID, deviceID string, event Event) Event {
+	event = compactRelayedEvent(event)
 	if event.TS == "" {
 		event.TS = time.Now().Format(time.RFC3339)
 	}
@@ -494,7 +531,7 @@ func (s *relayStore) eventsForUser(userID, sessionID string, after int64, limit 
 	result := []Event{}
 	for _, owned := range s.events {
 		if owned.UserID == userID && owned.Event.SessionID == sessionID && owned.Event.ID > after {
-			result = append(result, owned.Event)
+			result = append(result, compactRelayedEvent(owned.Event))
 		}
 	}
 	if len(result) > limit {

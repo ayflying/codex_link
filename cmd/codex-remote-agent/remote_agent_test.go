@@ -274,6 +274,57 @@ func TestStoreEventsBeforePagesHistoryWithoutBroadcastingLocalHydration(t *testi
 	}
 }
 
+func TestStoreTruncatesOversizedToolOutputForHistory(t *testing.T) {
+	store := NewStore(t.TempDir())
+	stored := store.Append(Event{
+		SessionID: "thread-large-output",
+		Type:      "tool.output",
+		Payload:   map[string]interface{}{"text": strings.Repeat("x", maxStoredToolOutputBytes*2)},
+	})
+	text := stored.Payload["text"].(string)
+	if len(text) > maxStoredToolOutputBytes || !strings.HasSuffix(text, toolOutputTruncatedNote) {
+		t.Fatalf("oversized output was not compacted: bytes=%d", len(text))
+	}
+	if truncated, _ := stored.Payload["truncated"].(bool); !truncated {
+		t.Fatalf("compacted output should be marked as truncated: %#v", stored.Payload)
+	}
+
+	history, hasMore := store.EventsBefore("thread-large-output", 0, 6)
+	if hasMore || len(history) != 1 || len(history[0].Payload["text"].(string)) > maxStoredToolOutputBytes {
+		t.Fatalf("history returned an oversized event: hasMore=%v history=%#v", hasMore, history)
+	}
+}
+
+func TestStoreCompactsOversizedOutputFromExistingCache(t *testing.T) {
+	dataDir := t.TempDir()
+	path := filepath.Join(dataDir, "remote-agent-cache.json")
+	raw, err := json.Marshal(storeFile{Events: []Event{{
+		ID:        7,
+		SessionID: "thread-existing-cache",
+		Type:      "tool.output",
+		Payload:   map[string]interface{}{"text": strings.Repeat("y", maxStoredToolOutputBytes*2)},
+	}}})
+	if err != nil {
+		t.Fatalf("marshal cache fixture: %v", err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatalf("write cache fixture: %v", err)
+	}
+
+	store := NewStore(dataDir)
+	events := store.Events("thread-existing-cache", 0, 6)
+	if len(events) != 1 || len(events[0].Payload["text"].(string)) > maxStoredToolOutputBytes {
+		t.Fatalf("existing cache was not compacted: %#v", events)
+	}
+	persisted, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read compacted cache: %v", err)
+	}
+	if len(persisted) >= len(raw) {
+		t.Fatalf("compacted cache was not persisted: before=%d after=%d", len(raw), len(persisted))
+	}
+}
+
 func TestStoreAppendLocalBatchPersistsWithoutBroadcasting(t *testing.T) {
 	store := NewStore(t.TempDir())
 	broadcasts := 0

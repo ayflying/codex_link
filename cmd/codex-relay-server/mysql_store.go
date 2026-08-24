@@ -710,6 +710,7 @@ func (s *mysqlRelayStore) sessionsForUser(userID, deviceID string) []Session {
 }
 
 func (s *mysqlRelayStore) appendEvent(userID, deviceID string, event Event) Event {
+	event = compactRelayedEvent(event)
 	if event.TS == "" {
 		event.TS = time.Now().UTC().Format(time.RFC3339Nano)
 	}
@@ -754,7 +755,7 @@ func (s *mysqlRelayStore) eventsForUser(userID, sessionID string, after int64, l
 			event.Payload = map[string]interface{}{}
 		}
 		event.SessionID = sessionID
-		result = append(result, event)
+		result = append(result, compactRelayedEvent(event))
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return result

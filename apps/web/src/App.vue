@@ -923,6 +923,22 @@ async function openThread(session: SessionRecord) {
     await nextTick();
     await scrollTranscriptToBottom();
   } catch (reason) {
+    if (isActiveWriterError(reason)) {
+      const readOnlySession: SessionRecord = {
+        ...session,
+        mode: "host-readonly",
+        note: "该对话正在由本机 Codex 使用，当前仅可查看历史。"
+      };
+      upsertSession(readOnlySession);
+      forceScrollToBottom.value = true;
+      activeSessionId.value = readOnlySession.id;
+      draft.value = "";
+      attachments.value = [];
+      sidebarOpen.value = false;
+      await nextTick();
+      await scrollTranscriptToBottom();
+      return;
+    }
     error.value = reason instanceof Error ? reason.message : String(reason);
   } finally {
     openingThreadId.value = "";
@@ -1321,11 +1337,13 @@ async function loadEventPage(sessionId: string, before: number, replace = false)
   if (historyLoading.value) return false;
   historyLoading.value = true;
   try {
-    const result = await commandWithFallback<{ events: RemoteEvent[]; hasMore: boolean }>(
-      "events.list",
-      { id: sessionId, before, limit: listPageSize },
-      () => getSessionHistory(sessionId, before, listPageSize)
-    );
+    const result = activeSessionReadOnly.value && !p2p.isP2POnly()
+      ? await getSessionHistory(sessionId, before, listPageSize)
+      : await commandWithFallback<{ events: RemoteEvent[]; hasMore: boolean }>(
+          "events.list",
+          { id: sessionId, before, limit: listPageSize },
+          () => getSessionHistory(sessionId, before, listPageSize)
+        );
     if (activeSessionId.value !== sessionId) return false;
     events.value = mergeEvents(events.value, result.events || []);
     historyHasMore.value = Boolean(result.hasMore);
@@ -1375,7 +1393,7 @@ function connectEvents(sessionId: string, reset = true) {
   drainPendingEvents(sessionId);
   void loadEventPage(sessionId, 0, true);
 
-  if (p2p.isConnected()) {
+  if (p2p.isConnected() && !activeSessionReadOnly.value) {
     streamState.value = "connected";
     return;
   }
@@ -1577,6 +1595,11 @@ function eventText(event: RemoteEvent) {
   }
   if (event.type === "error") return String(event.payload.message || JSON.stringify(event.payload));
   return compactPayload(event.payload);
+}
+
+function isActiveWriterError(reason: unknown) {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  return /already has an active writer/i.test(message);
 }
 
 function eventHtml(event: RemoteEvent) {
