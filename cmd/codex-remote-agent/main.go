@@ -960,8 +960,12 @@ func (b *Bridge) SendMessage(text, sessionID string, attachments []Attachment) e
 
 func (b *Bridge) ensureSession(sessionID string) error {
 	b.mu.Lock()
+	_, readOnly := b.readOnlyThreads[sessionID]
 	missing := b.session == nil || (sessionID != "" && b.session.ID != sessionID)
 	b.mu.Unlock()
+	if sessionID != "" && readOnly {
+		return errThreadReadOnly
+	}
 	if !missing {
 		return nil
 	}

@@ -243,6 +243,12 @@ func TestResumeThreadReadsHistoryWhenAnotherWriterIsActive(t *testing.T) {
 	if err := bridge.SendMessage("不应发送", busyID, nil); !errors.Is(err, errThreadReadOnly) {
 		t.Fatalf("expected read-only write rejection, got %v", err)
 	}
+	if _, err := bridge.QueueList(busyID); !errors.Is(err, errThreadReadOnly) {
+		t.Fatalf("expected read-only queue rejection, got %v", err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("read-only commands should not retry app-server resume: %#v", requests)
+	}
 }
 
 func TestStoreEventsBeforePagesHistoryWithoutBroadcastingLocalHydration(t *testing.T) {
