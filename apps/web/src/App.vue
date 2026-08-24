@@ -174,6 +174,8 @@ const tokenName = ref("");
 const tokenMessage = ref("");
 const noticeMessage = ref("");
 const sessions = ref<SessionRecord[]>([]);
+const completionNoticeSessionIds = ref<string[]>([]);
+const knownSessionStatuses = ref<Record<string, string>>({});
 const activeSessionId = ref("");
 const events = ref<RemoteEvent[]>([]);
 const draft = ref("");
@@ -233,6 +235,8 @@ let historyScrollArmed = false;
 
 const projectOrderStorageKey = "codex-link-project-order";
 const recentOrderStorageKey = "codex-link-recent-order";
+const completionNoticeStorageKey = "codex-link-completion-notices";
+const sessionStatusStorageKey = "codex-link-session-statuses";
 
 const p2p = new P2PTransport({
   onEvent: (event) => acceptRemoteEvent(event),
@@ -453,7 +457,7 @@ async function refresh() {
         ? p2p.request<{ skills: SkillOption[] }>("skills.list", {})
         : getSkills(activeDeviceId.value)).catch(() => ({ skills: [] }))
     ]);
-    sessions.value = sessionResult.sessions;
+    syncSessionList(sessionResult.sessions);
     settings.value = { ...defaultAppSettings, ...settingsResult };
     models.value = modelResult.models;
     skills.value = skillResult.skills;
@@ -926,13 +930,23 @@ function loadSidebarPreferences() {
   try {
     const storedProjects = JSON.parse(localStorage.getItem(projectOrderStorageKey) || "[]");
     const storedRecent = JSON.parse(localStorage.getItem(recentOrderStorageKey) || "[]");
+    const storedCompletionNotices = JSON.parse(localStorage.getItem(completionNoticeStorageKey) || "[]");
+    const storedSessionStatuses = JSON.parse(localStorage.getItem(sessionStatusStorageKey) || "{}");
     if (Array.isArray(storedProjects)) projectOrder.value = storedProjects.filter((item): item is string => typeof item === "string");
     if (Array.isArray(storedRecent)) recentOrder.value = storedRecent.filter((item): item is string => typeof item === "string");
+    if (Array.isArray(storedCompletionNotices)) completionNoticeSessionIds.value = storedCompletionNotices.filter((item): item is string => typeof item === "string");
+    if (storedSessionStatuses && typeof storedSessionStatuses === "object" && !Array.isArray(storedSessionStatuses)) {
+      knownSessionStatuses.value = Object.fromEntries(
+        Object.entries(storedSessionStatuses).filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
+      );
+    }
     const storedTheme = localStorage.getItem("codex-link-theme");
     if (storedTheme === "light" || storedTheme === "dark") theme.value = storedTheme;
   } catch {
     projectOrder.value = [];
     recentOrder.value = [];
+    completionNoticeSessionIds.value = [];
+    knownSessionStatuses.value = {};
   }
 }
 
@@ -963,6 +977,65 @@ function applyStoredOrder<T>(items: T[], order: string[], key: (item: T) => stri
 
 function sortSessionsByUpdatedAt(items: SessionRecord[]) {
   return [...items].sort((a, b) => compareUpdatedAt(a.updatedAt, b.updatedAt));
+}
+
+function isCompletedStatus(status?: string) {
+  return ["done", "complete", "completed"].includes(String(status || "").toLowerCase());
+}
+
+function persistCompletionNotices() {
+  try {
+    localStorage.setItem(completionNoticeStorageKey, JSON.stringify(completionNoticeSessionIds.value));
+  } catch {
+    // The reminder remains active for this page when storage is unavailable.
+  }
+}
+
+function persistSessionStatuses() {
+  try {
+    localStorage.setItem(sessionStatusStorageKey, JSON.stringify(knownSessionStatuses.value));
+  } catch {
+    // Status tracking remains active for this page when storage is unavailable.
+  }
+}
+
+function hasCompletionNotice(sessionId: string) {
+  return completionNoticeSessionIds.value.includes(sessionId);
+}
+
+function markCompletionNotice(sessionId: string) {
+  if (!sessionId || hasCompletionNotice(sessionId)) return;
+  completionNoticeSessionIds.value = [...completionNoticeSessionIds.value, sessionId];
+  persistCompletionNotices();
+}
+
+function clearCompletionNotice(sessionId: string) {
+  if (!hasCompletionNotice(sessionId)) return;
+  completionNoticeSessionIds.value = completionNoticeSessionIds.value.filter((id) => id !== sessionId);
+  persistCompletionNotices();
+}
+
+function forgetSessionStatus(sessionId: string) {
+  if (!sessionId || !(sessionId in knownSessionStatuses.value)) return;
+  const next = { ...knownSessionStatuses.value };
+  delete next[sessionId];
+  knownSessionStatuses.value = next;
+  persistSessionStatuses();
+}
+
+function observeSessionStatus(session: SessionRecord) {
+  if (!session.id) return;
+  const previousStatus = knownSessionStatuses.value[session.id];
+  if (previousStatus && !isCompletedStatus(previousStatus) && isCompletedStatus(session.status)) {
+    markCompletionNotice(session.id);
+  }
+  knownSessionStatuses.value = { ...knownSessionStatuses.value, [session.id]: session.status };
+}
+
+function syncSessionList(nextSessions: SessionRecord[]) {
+  for (const session of nextSessions) observeSessionStatus(session);
+  sessions.value = nextSessions;
+  persistSessionStatuses();
 }
 
 function compareUpdatedAt(a?: string, b?: string) {
@@ -1055,7 +1128,11 @@ async function startSession() {
 }
 
 async function openThread(session: SessionRecord) {
-  if (session.id === activeSessionId.value || loading.value || openingThreadId.value) return;
+  if (session.id === activeSessionId.value) {
+    clearCompletionNotice(session.id);
+    return;
+  }
+  if (loading.value || openingThreadId.value) return;
   openingThreadId.value = session.id;
   loading.value = true;
   error.value = "";
@@ -1067,6 +1144,7 @@ async function openThread(session: SessionRecord) {
       () => resumeThread(session.id)
     );
     upsertSession(resumed);
+    clearCompletionNotice(resumed.id);
     selectedProjectCwd.value = isRecentSession(resumed) ? "" : resumed.cwd || "";
     forceScrollToBottom.value = true;
     activeSessionId.value = resumed.id;
@@ -1085,6 +1163,7 @@ async function openThread(session: SessionRecord) {
         note: "该对话正在由本机 Codex 使用，当前仅可查看历史。"
       };
       upsertSession(readOnlySession);
+      clearCompletionNotice(readOnlySession.id);
       forceScrollToBottom.value = true;
       activeSessionId.value = readOnlySession.id;
       draft.value = "";
@@ -1114,6 +1193,8 @@ async function removeThread(session: SessionRecord) {
       () => deleteThread(session.id)
     );
     sessions.value = sessions.value.filter((item) => item.id !== session.id);
+    clearCompletionNotice(session.id);
+    forgetSessionStatus(session.id);
     if (activeSessionId.value === session.id) {
       activeSessionId.value = "";
       events.value = [];
@@ -1758,6 +1839,12 @@ function connectEvents(sessionId: string, reset = true) {
 }
 
 function acceptRemoteEvent(event: RemoteEvent) {
+  if (event.type === "turn.done" && String(event.payload.status || "done").toLowerCase() !== "cancelled") {
+    markCompletionNotice(event.sessionId);
+  }
+  if (event.type === "session.status" && isCompletedStatus(String(event.payload.status || ""))) {
+    markCompletionNotice(event.sessionId);
+  }
   if (event.sessionId !== activeSessionId.value) {
     pendingRemoteEvents.set(eventKey(event), event);
     if (pendingRemoteEvents.size > 500) pendingRemoteEvents.delete(pendingRemoteEvents.keys().next().value || "");
@@ -1797,6 +1884,8 @@ function eventKey(event: RemoteEvent) {
 }
 
 function upsertSession(session: SessionRecord) {
+  observeSessionStatus(session);
+  persistSessionStatuses();
   const index = sessions.value.findIndex((item) => item.id === session.id);
   if (index >= 0) sessions.value[index] = session;
   else sessions.value.unshift(session);
@@ -2572,6 +2661,7 @@ function transportLabel(status: typeof transportState.value) {
                 >
                   <button class="session-open" type="button" :title="session.title" :disabled="loading" @click="openThread(session)">
                     <span class="session-title">{{ session.title }}</span>
+                    <span v-if="hasCompletionNotice(session.id)" class="session-completion-dot" role="img" aria-label="任务已完成" title="任务已完成" />
                   </button>
                   <button class="delete-thread" type="button" title="删除对话" :disabled="session.mode === 'host-readonly'" @click="removeThread(session)">
                     <Trash2 :size="15" />
@@ -2609,6 +2699,7 @@ function transportLabel(status: typeof transportState.value) {
               >
                 <button class="session-open" type="button" :title="session.title" :disabled="loading" @click="openThread(session)">
                   <span class="session-title">{{ session.title }}</span>
+                  <span v-if="hasCompletionNotice(session.id)" class="session-completion-dot" role="img" aria-label="任务已完成" title="任务已完成" />
                 </button>
                 <button class="delete-thread" type="button" title="删除对话" :disabled="session.mode === 'host-readonly'" @click="removeThread(session)">
                   <Trash2 :size="15" />
