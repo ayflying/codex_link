@@ -168,7 +168,7 @@ func (s *Store) UpsertSession(session Session) {
 }
 
 func (s *Store) UpsertSessionLocal(session Session) {
-	s.upsertSession(session, false)
+	s.UpsertSessionsLocal([]Session{session})
 }
 
 func (s *Store) upsertSession(session Session, notify bool) {
@@ -181,6 +181,21 @@ func (s *Store) upsertSession(session Session, notify bool) {
 	if notify && hook != nil {
 		hook(session)
 	}
+}
+
+func (s *Store) UpsertSessionsLocal(sessions []Session) {
+	if len(sessions) == 0 {
+		return
+	}
+	s.mu.Lock()
+	for _, session := range sessions {
+		if session.ID == "" {
+			continue
+		}
+		s.sessions[session.ID] = mergeSessionMetadata(s.sessions[session.ID], session)
+	}
+	s.persistLocked()
+	s.mu.Unlock()
 }
 
 func (s *Store) EnrichSession(session Session) Session {

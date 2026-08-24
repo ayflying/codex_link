@@ -299,9 +299,7 @@ func (a *remoteAgent) syncThreads() error {
 	if err != nil {
 		return err
 	}
-	for _, session := range sessions {
-		a.store.UpsertSession(session)
-	}
+	a.store.UpsertSessionsLocal(sessions)
 	a.send("sync.sessions", "", "", map[string]interface{}{"sessions": sessions})
 	return nil
 }
@@ -324,9 +322,7 @@ func (a *remoteAgent) executeCommand(action string, payload json.RawMessage) (in
 		if err != nil {
 			return nil, err
 		}
-		for _, session := range sessions {
-			a.store.UpsertSession(session)
-		}
+		a.store.UpsertSessionsLocal(sessions)
 		return map[string]interface{}{"sessions": sessions}, nil
 	case "events.list":
 		var body struct {

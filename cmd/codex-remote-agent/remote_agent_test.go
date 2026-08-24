@@ -303,6 +303,23 @@ func TestStoreUpsertSessionLocalDoesNotBroadcast(t *testing.T) {
 	}
 }
 
+func TestStoreUpsertSessionsLocalPersistsBatchWithoutBroadcasting(t *testing.T) {
+	store := NewStore(t.TempDir())
+	broadcasts := 0
+	store.SetSessionHook(func(Session) { broadcasts++ })
+	store.UpsertSessionsLocal([]Session{
+		{ID: "thread-one", Title: "第一条"},
+		{ID: "thread-two", Title: "第二条"},
+	})
+	if broadcasts != 0 {
+		t.Fatalf("local session batch should not be broadcast: %d", broadcasts)
+	}
+	sessions := store.Sessions()
+	if len(sessions) != 2 || sessions[0].ID == "" || sessions[1].ID == "" {
+		t.Fatalf("local session batch was not persisted: %#v", sessions)
+	}
+}
+
 func TestParseTokenUsage(t *testing.T) {
 	window := int64(114688)
 	got := parseTokenUsage(map[string]interface{}{
