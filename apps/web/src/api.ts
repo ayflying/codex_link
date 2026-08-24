@@ -86,6 +86,35 @@ export type RemoteDevice = {
   lastSeenAt?: string;
 };
 
+export type PortMapping = {
+  id: string;
+  userId: string;
+  deviceId: string;
+  deviceName: string;
+  name: string;
+  targetHost: string;
+  targetPort: number;
+  listenPort: number;
+  protocol: "tcp";
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  listening: boolean;
+  p2pConnected: boolean;
+  lastError?: string;
+  listenAddress?: string;
+};
+
+export type PortMappingDraft = {
+  deviceId: string;
+  name: string;
+  targetHost: string;
+  targetPort: number;
+  listenPort: number;
+  protocol: "tcp";
+  enabled: boolean;
+};
+
 export type AppSettings = {
   approvalMode: "on-request" | "on-failure" | "never";
   workMode: "edit" | "plan";
@@ -154,6 +183,28 @@ export async function updateAdminUser(userId: string, isAdmin: boolean) {
 
 export async function deleteAdminUser(userId: string) {
   return request<{ ok: boolean }>(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
+}
+
+export async function getPortMappings() {
+  return request<{ mappings: PortMapping[] }>("/api/admin/port-mappings");
+}
+
+export async function createPortMapping(mapping: PortMappingDraft) {
+  return request<{ mapping: PortMapping }>("/api/admin/port-mappings", {
+    method: "POST",
+    body: JSON.stringify(mapping)
+  });
+}
+
+export async function updatePortMapping(id: string, mapping: PortMappingDraft) {
+  return request<{ mapping: PortMapping }>(`/api/admin/port-mappings/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(mapping)
+  });
+}
+
+export async function deletePortMapping(id: string) {
+  return request<{ ok: boolean }>(`/api/admin/port-mappings/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export async function getTokens() {

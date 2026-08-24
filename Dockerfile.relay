@@ -25,6 +25,6 @@ COPY --from=go-build /out/codex-relay-server /app/codex-relay-server
 COPY --from=web-build /src/apps/web/dist /app/web
 RUN mkdir -p /data && chown -R codex:codex /app /data
 USER codex
-EXPOSE 8787
+EXPOSE 8787/tcp 8787/udp
 ENV PORT=8787 DATA_DIR=/data WEB_DIR=/app/web ALLOW_REGISTRATION=true
 ENTRYPOINT ["/app/codex-relay-server"]

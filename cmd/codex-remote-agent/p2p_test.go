@@ -62,3 +62,15 @@ func TestP2PSignalIdentifiers(t *testing.T) {
 		t.Fatalf("unexpected STUN servers: %#v", servers)
 	}
 }
+
+func TestValidateP2PPortInit(t *testing.T) {
+	if err := validateP2PPortInit(p2pPortInit{Type: "port-map-init", TargetHost: "127.0.0.1", TargetPort: 9222}); err != nil {
+		t.Fatalf("valid port mapping init rejected: %v", err)
+	}
+	if err := validateP2PPortInit(p2pPortInit{Type: "port-map-init", TargetHost: "127.0.0.1", TargetPort: 0}); err == nil {
+		t.Fatal("invalid port mapping init must be rejected")
+	}
+	if err := validateP2PPortInit(p2pPortInit{Type: "command", TargetHost: "127.0.0.1", TargetPort: 9222}); err == nil {
+		t.Fatal("unexpected message type must be rejected")
+	}
+}

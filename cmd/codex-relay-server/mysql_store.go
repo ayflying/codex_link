@@ -42,6 +42,76 @@ type accessTokenRecord struct {
 	LastUsedDeviceID string
 }
 
+type PortMapping struct {
+	ID            string `json:"id"`
+	UserID        string `json:"userId"`
+	DeviceID      string `json:"deviceId"`
+	DeviceName    string `json:"deviceName"`
+	Name          string `json:"name"`
+	TargetHost    string `json:"targetHost"`
+	TargetPort    int    `json:"targetPort"`
+	ListenPort    int    `json:"listenPort"`
+	Protocol      string `json:"protocol"`
+	Enabled       bool   `json:"enabled"`
+	CreatedAt     string `json:"createdAt"`
+	UpdatedAt     string `json:"updatedAt"`
+	Listening     bool   `json:"listening"`
+	P2PConnected  bool   `json:"p2pConnected"`
+	LastError     string `json:"lastError,omitempty"`
+	ListenAddress string `json:"listenAddress,omitempty"`
+}
+
+type portMappingInput struct {
+	DeviceID   string `json:"deviceId"`
+	Name       string `json:"name"`
+	TargetHost string `json:"targetHost"`
+	TargetPort int    `json:"targetPort"`
+	ListenPort int    `json:"listenPort"`
+	Protocol   string `json:"protocol"`
+	Enabled    *bool  `json:"enabled"`
+}
+
+func validatePortMappingInput(input portMappingInput) error {
+	if strings.TrimSpace(input.DeviceID) == "" {
+		return errors.New("请选择目标设备")
+	}
+	if strings.TrimSpace(input.Name) == "" || len([]rune(strings.TrimSpace(input.Name))) > 120 {
+		return errors.New("映射名称不能为空且不能超过 120 个字符")
+	}
+	if strings.TrimSpace(input.TargetHost) == "" || len([]rune(strings.TrimSpace(input.TargetHost))) > 255 {
+		return errors.New("目标地址无效")
+	}
+	if input.TargetPort < 1 || input.TargetPort > 65535 {
+		return errors.New("目标端口必须是 1 到 65535")
+	}
+	if input.ListenPort < 1 || input.ListenPort > 65535 {
+		return errors.New("公开端口必须是 1 到 65535")
+	}
+	protocol := strings.ToLower(strings.TrimSpace(input.Protocol))
+	if protocol != "tcp" {
+		return errors.New("当前只支持 TCP 映射")
+	}
+	return nil
+}
+
+func normalizePortMappingInput(input portMappingInput) portMappingInput {
+	input.DeviceID = strings.TrimSpace(input.DeviceID)
+	input.Name = strings.TrimSpace(input.Name)
+	input.TargetHost = strings.TrimSpace(input.TargetHost)
+	input.Protocol = strings.ToLower(strings.TrimSpace(input.Protocol))
+	if input.TargetHost == "" {
+		input.TargetHost = "127.0.0.1"
+	}
+	if input.Protocol == "" {
+		input.Protocol = "tcp"
+	}
+	if input.Enabled == nil {
+		enabled := true
+		input.Enabled = &enabled
+	}
+	return input
+}
+
 func newMySQLRelayStore(uploadDir string) (*mysqlRelayStore, error) {
 	if err := os.MkdirAll(uploadDir, 0o700); err != nil {
 		return nil, fmt.Errorf("创建图片目录失败: %w", err)
@@ -441,6 +511,118 @@ func (s *mysqlRelayStore) devicesForUser(userID string, online func(string) bool
 		result = append(result, map[string]interface{}{"id": id, "name": name, "tokenId": tokenID, "tokenName": tokenName, "tokenPrefix": prefix, "online": online(id), "createdAt": createdAt, "updatedAt": updatedAt, "lastSeenAt": lastSeenAt})
 	}
 	return result
+}
+
+func (s *mysqlRelayStore) listPortMappings(userID string) ([]PortMapping, error) {
+	return s.queryPortMappings(`WHERE p.user_id = ?`, userID)
+}
+
+func (s *mysqlRelayStore) listAllPortMappings() ([]PortMapping, error) {
+	return s.queryPortMappings("", nil)
+}
+
+func (s *mysqlRelayStore) queryPortMappings(where string, arg interface{}) ([]PortMapping, error) {
+	query := `SELECT p.id, p.user_id, p.device_id, d.name, p.name, p.target_host, p.target_port, p.listen_port, p.protocol, p.enabled, p.created_at, p.updated_at
+		FROM port_mappings p JOIN devices d ON d.id = p.device_id ` + where + ` ORDER BY p.created_at ASC, p.id ASC`
+	var rows *sql.Rows
+	var err error
+	if arg == nil {
+		rows, err = s.db.Query(query)
+	} else {
+		rows, err = s.db.Query(query, arg)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []PortMapping{}
+	for rows.Next() {
+		var mapping PortMapping
+		if err := rows.Scan(&mapping.ID, &mapping.UserID, &mapping.DeviceID, &mapping.DeviceName, &mapping.Name, &mapping.TargetHost, &mapping.TargetPort, &mapping.ListenPort, &mapping.Protocol, &mapping.Enabled, &mapping.CreatedAt, &mapping.UpdatedAt); err != nil {
+			return nil, err
+		}
+		mapping.ListenAddress = fmt.Sprintf("0.0.0.0:%d", mapping.ListenPort)
+		result = append(result, mapping)
+	}
+	return result, rows.Err()
+}
+
+func (s *mysqlRelayStore) getPortMapping(userID, mappingID string) (PortMapping, error) {
+	mappings, err := s.listPortMappings(userID)
+	if err != nil {
+		return PortMapping{}, err
+	}
+	for _, mapping := range mappings {
+		if mapping.ID == mappingID {
+			return mapping, nil
+		}
+	}
+	return PortMapping{}, errors.New("端口映射不存在")
+}
+
+func (s *mysqlRelayStore) createPortMapping(userID string, input portMappingInput) (PortMapping, error) {
+	input = normalizePortMappingInput(input)
+	if err := validatePortMappingInput(input); err != nil {
+		return PortMapping{}, err
+	}
+	var found int
+	if err := s.db.QueryRow(`SELECT 1 FROM devices WHERE id = ? AND user_id = ?`, input.DeviceID, userID).Scan(&found); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return PortMapping{}, errors.New("目标设备不存在或不属于当前用户")
+		}
+		return PortMapping{}, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	id := randomID()
+	_, err := s.db.Exec(`INSERT INTO port_mappings (id, user_id, device_id, name, target_host, target_port, listen_port, protocol, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, userID, input.DeviceID, input.Name, input.TargetHost, input.TargetPort, input.ListenPort, input.Protocol, *input.Enabled, now, now)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+			return PortMapping{}, errors.New("公开端口已经被其他映射占用")
+		}
+		return PortMapping{}, err
+	}
+	return s.getPortMapping(userID, id)
+}
+
+func (s *mysqlRelayStore) updatePortMapping(userID, mappingID string, input portMappingInput) (PortMapping, error) {
+	input = normalizePortMappingInput(input)
+	if err := validatePortMappingInput(input); err != nil {
+		return PortMapping{}, err
+	}
+	if _, err := s.getPortMapping(userID, mappingID); err != nil {
+		return PortMapping{}, err
+	}
+	var found int
+	if err := s.db.QueryRow(`SELECT 1 FROM devices WHERE id = ? AND user_id = ?`, input.DeviceID, userID).Scan(&found); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return PortMapping{}, errors.New("目标设备不存在或不属于当前用户")
+		}
+		return PortMapping{}, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.Exec(`UPDATE port_mappings SET device_id = ?, name = ?, target_host = ?, target_port = ?, listen_port = ?, protocol = ?, enabled = ?, updated_at = ? WHERE id = ? AND user_id = ?`, input.DeviceID, input.Name, input.TargetHost, input.TargetPort, input.ListenPort, input.Protocol, *input.Enabled, now, mappingID, userID)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+			return PortMapping{}, errors.New("公开端口已经被其他映射占用")
+		}
+		return PortMapping{}, err
+	}
+	return s.getPortMapping(userID, mappingID)
+}
+
+func (s *mysqlRelayStore) deletePortMapping(userID, mappingID string) error {
+	result, err := s.db.Exec(`DELETE FROM port_mappings WHERE id = ? AND user_id = ?`, mappingID, userID)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return errors.New("端口映射不存在")
+	}
+	return nil
 }
 
 func (s *mysqlRelayStore) deviceOwnedBy(userID, deviceID string) bool {

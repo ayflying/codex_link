@@ -6,8 +6,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/pion/ice/v4"
 	"github.com/pion/stun/v3"
+	"github.com/pion/webrtc/v4"
 )
 
 // stunBindingResponse handles only STUN Binding requests. It never accepts or
@@ -47,21 +50,15 @@ func (s *relayServer) startSTUN() error {
 		return err
 	}
 	s.stunConn = conn
-	s.stunWG.Add(1)
-	go func() {
-		defer s.stunWG.Done()
-		buffer := make([]byte, 1500)
-		for {
-			n, remoteAddr, readErr := conn.ReadFromUDP(buffer)
-			if readErr != nil {
-				return
-			}
-			response, ok := stunBindingResponse(buffer[:n], remoteAddr)
-			if ok {
-				_, _ = conn.WriteToUDP(response, remoteAddr)
-			}
-		}
-	}()
+	muxConn := &stunMuxPacketConn{conn: conn}
+	s.iceUDPMux = ice.NewUDPMuxDefault(ice.UDPMuxParams{UDPConn: muxConn})
+	settingEngine := webrtc.SettingEngine{}
+	settingEngine.SetICEUDPMux(s.iceUDPMux)
+	settingEngine.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
+	if publicIPs := resolvePublicIPs(s.stunHost); len(publicIPs) > 0 {
+		settingEngine.SetNAT1To1IPs(publicIPs, webrtc.ICECandidateTypeHost)
+	}
+	s.webrtcAPI = webrtc.NewAPI(webrtc.WithSettingEngine(settingEngine))
 	return nil
 }
 
@@ -85,6 +82,13 @@ func (s *relayServer) iceServersForRequest(request *http.Request) []string {
 	if host == "" {
 		return servers
 	}
+	if s.stunHost == "" {
+		s.mu.Lock()
+		if s.publicHost == "" {
+			s.publicHost = host
+		}
+		s.mu.Unlock()
+	}
 	server := "stun:" + net.JoinHostPort(host, strconv.Itoa(publicPort))
 	for _, existing := range servers {
 		if existing == server {
@@ -95,9 +99,73 @@ func (s *relayServer) iceServersForRequest(request *http.Request) []string {
 }
 
 func (s *relayServer) closeSTUN() {
+	if s.iceUDPMux != nil {
+		_ = s.iceUDPMux.Close()
+		s.iceUDPMux = nil
+		s.stunConn = nil
+		return
+	}
 	if s.stunConn != nil {
 		_ = s.stunConn.Close()
-		s.stunWG.Wait()
 		s.stunConn = nil
 	}
+}
+
+type stunMuxPacketConn struct {
+	conn *net.UDPConn
+}
+
+func (c *stunMuxPacketConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
+	n, remoteAddr, err := c.conn.ReadFromUDP(buffer)
+	if err != nil {
+		return n, remoteAddr, err
+	}
+	if response, ok := stunBindingResponse(buffer[:n], remoteAddr); ok {
+		_, _ = c.conn.WriteToUDP(response, remoteAddr)
+	}
+	return n, remoteAddr, nil
+}
+
+func (c *stunMuxPacketConn) WriteTo(buffer []byte, address net.Addr) (int, error) {
+	return c.conn.WriteTo(buffer, address)
+}
+
+func (c *stunMuxPacketConn) Close() error { return c.conn.Close() }
+
+func (c *stunMuxPacketConn) LocalAddr() net.Addr { return c.conn.LocalAddr() }
+
+func (c *stunMuxPacketConn) SetDeadline(deadline time.Time) error {
+	return c.conn.SetDeadline(deadline)
+}
+
+func (c *stunMuxPacketConn) SetReadDeadline(deadline time.Time) error {
+	return c.conn.SetReadDeadline(deadline)
+}
+
+func (c *stunMuxPacketConn) SetWriteDeadline(deadline time.Time) error {
+	return c.conn.SetWriteDeadline(deadline)
+}
+
+func resolvePublicIPs(host string) []string {
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "" {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.To4() != nil {
+			return []string{ip.To4().String()}
+		}
+		return nil
+	}
+	addresses, err := net.LookupIP(host)
+	if err != nil {
+		return nil
+	}
+	result := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		if ipv4 := address.To4(); ipv4 != nil {
+			result = append(result, ipv4.String())
+		}
+	}
+	return result
 }

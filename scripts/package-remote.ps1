@@ -26,11 +26,12 @@ New-Item -ItemType Directory -Path (Join-Path $release "docs") | Out-Null
 Copy-Item -LiteralPath (Join-Path $root "docs\RELAY.md") -Destination (Join-Path $release "docs\RELAY.md") -Force
 Copy-Item -LiteralPath (Join-Path $root "docs\API.md") -Destination (Join-Path $release "docs\API.md") -Force
 
-@"
+$startAgentCommand = @"
 @echo off
 setlocal
 cd /d "%~dp0"
 codex-remote-agent.exe agent
-"@ | Set-Content -Path (Join-Path $release "start-agent.cmd") -Encoding ASCII
+"@
+Set-Content -Path (Join-Path $release "start-agent.cmd") -Value $startAgentCommand -Encoding ASCII
 
 Write-Host "Built remote client package: $release"

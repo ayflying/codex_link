@@ -48,6 +48,7 @@ type p2pPeer struct {
 	remoteDescriptionSet bool
 	pendingCandidates    []webrtc.ICECandidateInit
 	uploads              map[string]*p2pUpload
+	port                 *p2pPortSession
 	closeOnce            sync.Once
 }
 
@@ -117,17 +118,19 @@ func (a *remoteAgent) acceptP2POffer(signal p2pSignal) {
 		}
 	})
 	pc.OnDataChannel(func(dataChannel *webrtc.DataChannel) {
-		if dataChannel.Label() != "codex-control" {
-			return
+		switch dataChannel.Label() {
+		case "codex-control":
+			peer.mu.Lock()
+			peer.dc = dataChannel
+			peer.mu.Unlock()
+			dataChannel.OnMessage(func(message webrtc.DataChannelMessage) {
+				a.handleP2PCommand(peer, message.Data)
+			})
+			dataChannel.OnClose(func() { a.closeP2PPeer(signal.ClientID) })
+			dataChannel.OnError(func(err error) { a.closeP2PPeer(signal.ClientID) })
+		case "codex-port-map":
+			a.acceptP2PPortDataChannel(peer, dataChannel)
 		}
-		peer.mu.Lock()
-		peer.dc = dataChannel
-		peer.mu.Unlock()
-		dataChannel.OnMessage(func(message webrtc.DataChannelMessage) {
-			a.handleP2PCommand(peer, message.Data)
-		})
-		dataChannel.OnClose(func() { a.closeP2PPeer(signal.ClientID) })
-		dataChannel.OnError(func(err error) { a.closeP2PPeer(signal.ClientID) })
 	})
 
 	offer := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: signal.SDP}
@@ -343,6 +346,13 @@ func (a *remoteAgent) closeP2PPeer(clientID string) {
 		return
 	}
 	peer.closeOnce.Do(func() {
+		peer.mu.Lock()
+		port := peer.port
+		peer.port = nil
+		peer.mu.Unlock()
+		if port != nil {
+			port.close()
+		}
 		peer.mu.Lock()
 		for _, upload := range peer.uploads {
 			_ = upload.File.Close()

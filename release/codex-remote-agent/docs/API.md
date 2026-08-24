@@ -98,6 +98,33 @@ Invoke-RestMethod "$base/api/devices" -Headers $headers
 
 删除其他用户及其设备、秘钥、会话和图片元数据。删除最后一个管理员后，会自动提升剩余账号中注册最早的用户。
 
+### 端口映射
+
+端口映射只允许管理员操作，当前协议固定为 TCP。服务端监听 `listenPort`，每个连接都会单独与目标设备建立 WebRTC DataChannel，再连接客户端本机的 `targetHost:targetPort`。P2P 打洞失败会关闭该 TCP 连接，绝不会回退到 agent WebSocket 或 HTTP relay。
+
+```text
+GET    /api/admin/port-mappings
+POST   /api/admin/port-mappings
+PATCH  /api/admin/port-mappings/{id}
+DELETE /api/admin/port-mappings/{id}
+```
+
+创建或更新请求：
+
+```json
+{
+  "deviceId": "设备 ID",
+  "name": "远程调试",
+  "targetHost": "127.0.0.1",
+  "targetPort": 9222,
+  "listenPort": 19022,
+  "protocol": "tcp",
+  "enabled": true
+}
+```
+
+`listenPort` 还必须在宿主机防火墙和 `docker-compose.yml` 中显式发布，例如 `19022:19022/tcp`。映射端口不能使用服务端 HTTP 端口。API 返回 `listening`、`p2pConnected` 和 `lastError`，用于查看监听及当前连接状态。
+
 ## Token 管理
 
 ### GET `/api/auth/tokens`

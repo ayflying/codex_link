@@ -14,10 +14,14 @@ import {
   KeyRound,
   Menu,
   MessageSquarePlus,
+  Network,
+  Pencil,
   Plus,
   Play,
+  Power,
   RefreshCw,
   Send,
+  Save,
   ShieldCheck,
   Trash2,
   User,
@@ -38,6 +42,7 @@ import {
   getDevices,
   getHealth,
   getModels,
+  getPortMappings,
   getSettings,
   getThreads,
   getTokens,
@@ -49,6 +54,9 @@ import {
   resumeThread,
   sendApproval,
   sendMessage,
+  createPortMapping,
+  deletePortMapping,
+  updatePortMapping,
   updateAdminUser,
   updateSettings,
   uploadImage,
@@ -58,6 +66,8 @@ import {
   type AccessToken,
   type AuthStatus,
   type ModelOption,
+  type PortMapping,
+  type PortMappingDraft,
   type RemoteDevice,
   type RemoteEvent,
   type SessionRecord,
@@ -75,10 +85,15 @@ const newPassword = ref("");
 const userMenuOpen = ref(false);
 const modalView = ref<"user" | "tokens" | null>(null);
 const systemManagementOpen = ref(false);
+const systemSection = ref<"users" | "ports">("users");
 const adminUsers = ref<AdminUser[]>([]);
 const adminUsersLoading = ref(false);
 const adminError = ref("");
 const adminMessage = ref("");
+const portMappings = ref<PortMapping[]>([]);
+const portMappingsLoading = ref(false);
+const portMappingEditingId = ref("");
+const portMappingForm = ref<PortMappingDraft>({ deviceId: "", name: "", targetHost: "127.0.0.1", targetPort: 3000, listenPort: 19022, protocol: "tcp", enabled: true });
 const passwordMessage = ref("");
 const tokens = ref<AccessToken[]>([]);
 const tokenName = ref("");
@@ -329,13 +344,27 @@ async function openSystemManagement() {
   userMenuOpen.value = false;
   modalView.value = null;
   systemManagementOpen.value = true;
-  await refreshAdminUsers();
+  systemSection.value = "users";
+  await Promise.all([refreshAdminUsers(), refreshPortMappings()]);
 }
 
 function closeSystemManagement() {
   systemManagementOpen.value = false;
   adminError.value = "";
   adminMessage.value = "";
+}
+
+function emptyPortMappingDraft(): PortMappingDraft {
+  const device = devices.value.find((item) => item.online) || devices.value[0];
+  return {
+    deviceId: device?.id || "",
+    name: "",
+    targetHost: "127.0.0.1",
+    targetPort: 3000,
+    listenPort: 19022,
+    protocol: "tcp",
+    enabled: true
+  };
 }
 
 async function refreshAdminUsers() {
@@ -350,6 +379,104 @@ async function refreshAdminUsers() {
   } finally {
     adminUsersLoading.value = false;
   }
+}
+
+async function refreshPortMappings() {
+  if (!auth.value.isAdmin) return;
+  portMappingsLoading.value = true;
+  adminError.value = "";
+  try {
+    portMappings.value = (await getPortMappings()).mappings;
+  } catch (reason) {
+    adminError.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    portMappingsLoading.value = false;
+  }
+}
+
+function beginPortMapping(mapping?: PortMapping) {
+  portMappingEditingId.value = mapping?.id || "";
+  portMappingForm.value = mapping
+    ? {
+        deviceId: mapping.deviceId,
+        name: mapping.name,
+        targetHost: mapping.targetHost,
+        targetPort: mapping.targetPort,
+        listenPort: mapping.listenPort,
+        protocol: "tcp",
+        enabled: mapping.enabled
+      }
+    : emptyPortMappingDraft();
+  adminError.value = "";
+  adminMessage.value = "";
+}
+
+function cancelPortMapping() {
+  portMappingEditingId.value = "";
+  portMappingForm.value = emptyPortMappingDraft();
+}
+
+async function savePortMapping() {
+  const form = portMappingForm.value;
+  if (!form.deviceId) {
+    adminError.value = "请选择目标设备";
+    return;
+  }
+  if (!form.name.trim()) {
+    adminError.value = "请输入映射名称";
+    return;
+  }
+  if (form.targetPort < 1 || form.targetPort > 65535 || form.listenPort < 1 || form.listenPort > 65535) {
+    adminError.value = "端口必须是 1 到 65535";
+    return;
+  }
+  portMappingsLoading.value = true;
+  adminError.value = "";
+  adminMessage.value = "";
+  try {
+    if (portMappingEditingId.value) {
+      await updatePortMapping(portMappingEditingId.value, { ...form });
+      adminMessage.value = "端口映射已更新";
+    } else {
+      await createPortMapping({ ...form });
+      adminMessage.value = "端口映射已创建";
+    }
+    cancelPortMapping();
+    await refreshPortMappings();
+  } catch (reason) {
+    adminError.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    portMappingsLoading.value = false;
+  }
+}
+
+async function removePortMapping(mapping: PortMapping) {
+  if (!window.confirm(`确认删除端口映射“${mapping.name}”吗？公开端口会立即停止监听。`)) return;
+  portMappingsLoading.value = true;
+  adminError.value = "";
+  try {
+    await deletePortMapping(mapping.id);
+    adminMessage.value = `映射 ${mapping.name} 已删除`;
+    await refreshPortMappings();
+  } catch (reason) {
+    adminError.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    portMappingsLoading.value = false;
+  }
+}
+
+async function togglePortMapping(mapping: PortMapping) {
+  portMappingForm.value = {
+    deviceId: mapping.deviceId,
+    name: mapping.name,
+    targetHost: mapping.targetHost,
+    targetPort: mapping.targetPort,
+    listenPort: mapping.listenPort,
+    protocol: "tcp",
+    enabled: !mapping.enabled
+  };
+  portMappingEditingId.value = mapping.id;
+  await savePortMapping();
 }
 
 async function toggleAdminRole(user: AdminUser) {
@@ -1352,9 +1479,13 @@ function transportLabel(status: typeof transportState.value) {
           <strong>系统管理</strong>
         </div>
         <nav class="system-nav" aria-label="系统管理菜单">
-          <button class="system-nav-item active" type="button" @click="refreshAdminUsers">
+          <button class="system-nav-item" :class="{ active: systemSection === 'users' }" type="button" @click="systemSection = 'users'; refreshAdminUsers()">
             <User :size="17" />
             <span>用户管理</span>
+          </button>
+          <button class="system-nav-item" :class="{ active: systemSection === 'ports' }" type="button" @click="systemSection = 'ports'; refreshPortMappings()">
+            <Network :size="17" />
+            <span>端口映射</span>
           </button>
         </nav>
         <button class="system-back" type="button" @click="closeSystemManagement">
@@ -1366,11 +1497,11 @@ function transportLabel(status: typeof transportState.value) {
       <section class="system-content">
         <header class="system-content-heading">
           <div>
-            <p class="eyebrow">User Directory</p>
-            <h2>用户管理</h2>
-            <p>管理账号角色和访问范围。</p>
+            <p class="eyebrow">{{ systemSection === 'users' ? 'User Directory' : 'P2P Port Forwarding' }}</p>
+            <h2>{{ systemSection === 'users' ? '用户管理' : '端口映射' }}</h2>
+            <p>{{ systemSection === 'users' ? '管理账号角色和访问范围。' : '公开 TCP 端口只通过 WebRTC P2P 连接到目标设备。' }}</p>
           </div>
-          <button class="icon-button" type="button" title="刷新用户列表" :disabled="adminUsersLoading" @click="refreshAdminUsers">
+          <button class="icon-button" type="button" :title="systemSection === 'users' ? '刷新用户列表' : '刷新端口映射'" :disabled="systemSection === 'users' ? adminUsersLoading : portMappingsLoading" @click="systemSection === 'users' ? refreshAdminUsers() : refreshPortMappings()">
             <RefreshCw :size="19" />
           </button>
         </header>
@@ -1378,7 +1509,7 @@ function transportLabel(status: typeof transportState.value) {
         <p v-if="adminError" class="error">{{ adminError }}</p>
         <p v-if="adminMessage" class="admin-message">{{ adminMessage }}</p>
 
-        <div v-if="adminUsers.length" class="admin-user-table" role="table" aria-label="用户列表">
+        <div v-if="systemSection === 'users' && adminUsers.length" class="admin-user-table" role="table" aria-label="用户列表">
           <div class="admin-user-row admin-user-header" role="row">
             <span>用户</span>
             <span>角色</span>
@@ -1419,14 +1550,57 @@ function transportLabel(status: typeof transportState.value) {
             </div>
           </div>
         </div>
-        <div v-else-if="!adminUsersLoading" class="admin-empty">
+        <div v-else-if="systemSection === 'users' && !adminUsersLoading" class="admin-empty">
           <Users :size="28" />
           <strong>暂无用户</strong>
         </div>
-        <div v-else class="admin-empty">
+        <div v-else-if="systemSection === 'users'" class="admin-empty">
           <RefreshCw :size="28" class="spin" />
           <strong>正在读取用户</strong>
         </div>
+
+        <template v-if="systemSection === 'ports'">
+          <form class="port-mapping-form" @submit.prevent="savePortMapping">
+            <div class="port-form-heading">
+              <div>
+                <strong>{{ portMappingEditingId ? '编辑端口映射' : '新建端口映射' }}</strong>
+                <p>打洞失败时直接拒绝连接，不会回退到服务端控制通道。</p>
+              </div>
+              <button v-if="portMappingEditingId" class="icon-button compact" type="button" title="取消编辑" @click="cancelPortMapping">
+                <X :size="16" />
+              </button>
+            </div>
+            <div class="port-form-grid">
+              <label class="field-label"><span>映射名称</span><input v-model="portMappingForm.name" type="text" maxlength="120" placeholder="例如：远程调试" /></label>
+              <label class="field-label"><span>目标设备</span><select v-model="portMappingForm.deviceId"><option value="" disabled>选择在线或离线设备</option><option v-for="device in devices" :key="device.id" :value="device.id">{{ device.name }}{{ device.online ? '（在线）' : '（离线）' }}</option></select></label>
+              <label class="field-label"><span>本地目标地址</span><input v-model="portMappingForm.targetHost" type="text" maxlength="255" placeholder="127.0.0.1" /></label>
+              <label class="field-label"><span>本地目标端口</span><input v-model.number="portMappingForm.targetPort" type="number" min="1" max="65535" /></label>
+              <label class="field-label"><span>服务端公开端口</span><input v-model.number="portMappingForm.listenPort" type="number" min="1" max="65535" /><small>需在 Docker Compose 和宿主机防火墙中发布此 TCP 端口。</small></label>
+              <label class="port-enabled"><input v-model="portMappingForm.enabled" type="checkbox" /><span>启用监听</span></label>
+            </div>
+            <div class="port-form-actions">
+              <button class="primary icon-text" type="submit" :disabled="portMappingsLoading"><Save :size="17" /><span>{{ portMappingEditingId ? '保存修改' : '创建映射' }}</span></button>
+              <button v-if="portMappingEditingId" class="icon-button icon-text" type="button" @click="cancelPortMapping"><X :size="17" /><span>取消</span></button>
+            </div>
+          </form>
+
+          <div v-if="portMappings.length" class="port-mapping-table" role="table" aria-label="端口映射列表">
+            <div class="port-mapping-row port-mapping-header" role="row"><span>映射</span><span>目标</span><span>公开入口</span><span>状态</span><span>操作</span></div>
+            <div v-for="mapping in portMappings" :key="mapping.id" class="port-mapping-row" role="row">
+              <div class="port-mapping-name"><strong>{{ mapping.name }}</strong><small>{{ mapping.deviceName }}</small></div>
+              <code>{{ mapping.targetHost }}:{{ mapping.targetPort }}</code>
+              <code>{{ mapping.listenAddress || `0.0.0.0:${mapping.listenPort}` }}</code>
+              <div class="port-mapping-status" :class="{ ready: mapping.listening && mapping.enabled, connected: mapping.p2pConnected }"><span class="status-dot" />{{ mapping.p2pConnected ? 'P2P 已连接' : mapping.listening ? '等待 P2P' : mapping.enabled ? '监听失败' : '已停用' }}<small v-if="mapping.lastError">{{ mapping.lastError }}</small></div>
+              <div class="port-mapping-actions">
+                <button class="icon-button compact" type="button" :title="mapping.enabled ? '停用映射' : '启用映射'" :disabled="portMappingsLoading" @click="togglePortMapping(mapping)"><Power :size="16" /></button>
+                <button class="icon-button compact" type="button" title="编辑映射" :disabled="portMappingsLoading" @click="beginPortMapping(mapping)"><Pencil :size="16" /></button>
+                <button class="danger compact" type="button" title="删除映射" :disabled="portMappingsLoading" @click="removePortMapping(mapping)"><Trash2 :size="16" /></button>
+              </div>
+            </div>
+          </div>
+          <div v-else-if="!portMappingsLoading" class="admin-empty"><Network :size="28" /><strong>还没有端口映射</strong><span>创建一个公开 TCP 入口，用于远程调试。</span></div>
+          <div v-else class="admin-empty"><RefreshCw :size="28" class="spin" /><strong>正在读取端口映射</strong></div>
+        </template>
       </section>
     </section>
 

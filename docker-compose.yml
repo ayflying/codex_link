@@ -39,6 +39,8 @@ services:
     ports:
       - "18787:8787/tcp"
       - "18787:8787/udp"
+      # 端口映射不会自动改变 Docker 发布规则。创建映射后，将公开端口同时加入这里，例如：
+      # - "19022:19022/tcp"
     restart: unless-stopped
 
 volumes:

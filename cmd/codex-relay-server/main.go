@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pion/ice/v4"
+	"github.com/pion/webrtc/v4"
 )
 
 const (
@@ -616,6 +618,10 @@ type relayServer struct {
 	p2pOnly        bool
 	stunConn       *net.UDPConn
 	stunWG         sync.WaitGroup
+	iceUDPMux      ice.UDPMux
+	webrtcAPI      *webrtc.API
+	publicHost     string
+	portMappings   *portMappingManager
 	upgrader       websocket.Upgrader
 }
 
@@ -649,6 +655,7 @@ func newRelayServer(uploadDir, webDir string) (*relayServer, error) {
 		webDir:         webDir,
 		agents:         map[string]*agentPeer{},
 		p2pBrowsers:    map[string]*p2pBrowser{},
+		portMappings:   newPortMappingManager(nil),
 		iceServers:     splitList(env("WEBRTC_STUN_SERVERS", "")),
 		stunPort:       env("WEBRTC_STUN_PORT", "8787"),
 		stunHost:       env("WEBRTC_STUN_PUBLIC_HOST", ""),
@@ -676,7 +683,14 @@ func main() {
 		_ = server.store.close()
 		log.Fatal(err)
 	}
+	server.portMappings.server = server
+	if err := server.portMappings.start(); err != nil {
+		server.closeSTUN()
+		_ = server.store.close()
+		log.Fatal(err)
+	}
 	defer func() {
+		server.portMappings.stop()
 		server.closeSTUN()
 		_ = server.store.close()
 	}()
@@ -694,6 +708,8 @@ func main() {
 	mux.HandleFunc("/api/auth/tokens/", server.authTokenItem)
 	mux.HandleFunc("/api/admin/users", server.adminUsers)
 	mux.HandleFunc("/api/admin/users/", server.adminUserItem)
+	mux.HandleFunc("/api/admin/port-mappings", server.adminPortMappings)
+	mux.HandleFunc("/api/admin/port-mappings/", server.adminPortMappingItem)
 	mux.HandleFunc("/api/agent/login", server.agentLogin)
 	mux.HandleFunc("/api/agent/validate", server.agentValidate)
 	mux.HandleFunc("/api/agent/ws", server.agentWebSocket)
@@ -1145,6 +1161,9 @@ func (s *relayServer) handleAgentMessage(peer *agentPeer, message envelope) {
 	case "response":
 		peer.resolve(message)
 	case "p2p.signal", "p2p.ready":
+		if message.Type == "p2p.signal" && s.forwardP2PToPort(peer, message) {
+			return
+		}
 		s.forwardP2PToBrowser(peer, message)
 	}
 }
@@ -1191,6 +1210,19 @@ func (s *relayServer) forwardP2PToBrowser(peer *agentPeer, message envelope) {
 		return
 	}
 	_ = browser.writeJSON(message)
+}
+
+func (s *relayServer) forwardP2PToPort(peer *agentPeer, message envelope) bool {
+	var signal portP2PSignal
+	if json.Unmarshal(message.Payload, &signal) != nil || signal.ClientID == "" {
+		return false
+	}
+	portPeer := s.portMappings.peer(signal.ClientID)
+	if portPeer == nil || portPeer.userID != peer.userID || portPeer.deviceID != peer.deviceID {
+		return false
+	}
+	portPeer.handleSignal(signal)
+	return true
 }
 
 func (s *relayServer) agentPeer(deviceID string) *agentPeer {
@@ -1245,6 +1277,7 @@ func (s *relayServer) deviceItem(w http.ResponseWriter, request *http.Request) {
 		writeErrorStatus(w, http.StatusInternalServerError, "删除设备失败")
 		return
 	}
+	_ = s.portMappings.reconcile()
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
@@ -1618,6 +1651,9 @@ func (s *relayServer) unregisterPeer(peer *agentPeer) {
 	}
 	s.mu.Unlock()
 	peer.failPending(errors.New("客户端连接已断开"))
+	if s.portMappings != nil {
+		s.portMappings.closeDevice(peer.deviceID)
+	}
 }
 
 func (s *relayServer) deviceOnline(deviceID string) bool {
@@ -1774,6 +1810,8 @@ func (s *relayServer) openapi(w http.ResponseWriter, request *http.Request) {
 			"/api/auth/tokens/{id}":         map[string]interface{}{"delete": map[string]string{"summary": "删除指定 Token"}},
 			"/api/admin/users":              map[string]interface{}{"get": map[string]string{"summary": "管理员查询用户列表"}},
 			"/api/admin/users/{id}":         map[string]interface{}{"patch": map[string]string{"summary": "管理员设置用户角色"}, "delete": map[string]string{"summary": "管理员删除用户"}},
+			"/api/admin/port-mappings":      map[string]interface{}{"get": map[string]string{"summary": "管理员查询端口映射"}, "post": map[string]string{"summary": "管理员创建仅 P2P TCP 映射"}},
+			"/api/admin/port-mappings/{id}": map[string]interface{}{"patch": map[string]string{"summary": "管理员更新端口映射"}, "delete": map[string]string{"summary": "管理员删除端口映射"}},
 			"/api/agent/login":              map[string]interface{}{"post": map[string]string{"summary": "本机客户端使用 Token 登录设备"}},
 			"/api/agent/validate":           map[string]interface{}{"get": map[string]string{"summary": "校验客户端 Token 和设备绑定"}},
 			"/api/agent/ws":                 map[string]interface{}{"get": map[string]string{"summary": "客户端 WebSocket 反向连接"}},
