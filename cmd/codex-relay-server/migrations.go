@@ -28,10 +28,11 @@ const (
 var mysqlMigrations embed.FS
 
 type sqlMigration struct {
-	version    int64
-	name       string
-	checksum   string
-	statements []string
+	version         int64
+	name            string
+	checksum        string
+	legacyChecksums map[string]struct{}
+	statements      []string
 }
 
 type appliedMigration struct {
@@ -77,7 +78,7 @@ func (s *mysqlRelayStore) migrate() (int64, error) {
 		if !ok {
 			return 0, fmt.Errorf("数据库包含未随当前程序发布的迁移版本 %d", record.version)
 		}
-		if migration.name != record.name || migration.checksum != record.checksum {
+		if migration.name != record.name || !migration.matchesChecksum(record.checksum) {
 			return 0, fmt.Errorf("迁移版本 %d 的文件内容已变更，请恢复原迁移文件并新增迁移修正", record.version)
 		}
 	}
@@ -127,12 +128,13 @@ func loadSQLMigrations() ([]sqlMigration, error) {
 		if len(statements) == 0 {
 			return nil, fmt.Errorf("MySQL 迁移 %s 没有可执行语句", entry.Name())
 		}
-		digest := sha256.Sum256(raw)
+		checksum, legacyChecksums := migrationChecksums(raw)
 		migrations = append(migrations, sqlMigration{
-			version:    version,
-			name:       name,
-			checksum:   hex.EncodeToString(digest[:]),
-			statements: statements,
+			version:         version,
+			name:            name,
+			checksum:        checksum,
+			legacyChecksums: legacyChecksums,
+			statements:      statements,
 		})
 		seen[version] = struct{}{}
 	}
@@ -141,6 +143,32 @@ func loadSQLMigrations() ([]sqlMigration, error) {
 		return nil, fmt.Errorf("MySQL 迁移目录为空")
 	}
 	return migrations, nil
+}
+
+func (migration sqlMigration) matchesChecksum(checksum string) bool {
+	if checksum == migration.checksum {
+		return true
+	}
+	_, ok := migration.legacyChecksums[checksum]
+	return ok
+}
+
+func migrationChecksums(raw []byte) (string, map[string]struct{}) {
+	canonicalRaw := []byte(strings.ReplaceAll(string(raw), "\r\n", "\n"))
+	canonicalDigest := sha256.Sum256(canonicalRaw)
+	canonical := hex.EncodeToString(canonicalDigest[:])
+	legacy := map[string]struct{}{}
+	for _, candidate := range [][]byte{
+		raw,
+		[]byte(strings.ReplaceAll(string(canonicalRaw), "\n", "\r\n")),
+	} {
+		digest := sha256.Sum256(candidate)
+		checksum := hex.EncodeToString(digest[:])
+		if checksum != canonical {
+			legacy[checksum] = struct{}{}
+		}
+	}
+	return canonical, legacy
 }
 
 func parseMigrationFilename(filename string) (int64, string, error) {

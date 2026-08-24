@@ -39,6 +39,25 @@ func TestLoadSQLMigrations(t *testing.T) {
 	}
 }
 
+func TestMigrationChecksumAcceptsLegacyLineEndings(t *testing.T) {
+	canonical, legacy := migrationChecksums([]byte("CREATE TABLE example (id INT);\r\n"))
+	if len(legacy) == 0 {
+		t.Fatal("expected a legacy CRLF checksum")
+	}
+	migration := sqlMigration{checksum: canonical, legacyChecksums: legacy}
+	if !migration.matchesChecksum(canonical) {
+		t.Fatal("canonical checksum must be accepted")
+	}
+	for checksum := range legacy {
+		if !migration.matchesChecksum(checksum) {
+			t.Fatal("legacy CRLF checksum must be accepted")
+		}
+	}
+	if migration.matchesChecksum("not-a-checksum") {
+		t.Fatal("unexpected checksum must be rejected")
+	}
+}
+
 func TestSplitMigrationStatements(t *testing.T) {
 	statements := splitMigrationStatements(" CREATE TABLE one (id INT);\n\n; ALTER TABLE one ADD value TEXT; ")
 	if len(statements) != 2 || statements[0] != "CREATE TABLE one (id INT)" || statements[1] != "ALTER TABLE one ADD value TEXT" {
