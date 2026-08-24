@@ -6,23 +6,29 @@ Codex Link 是一个手机优先的 Vue 控制台，用于通过中心服务远�
 
 ## 架构
 
+系统由浏览器、Relay、本机 Agent、Codex app-server 和 MySQL 组成。它们不是一条固定链路，而是共享同一组身份与信令的四个独立平面：
+
+| 平面 | 参与方 | 传输内容 | Relay 是否承载业务字节 |
+| --- | --- | --- | --- |
+| 控制面 | 浏览器、Relay、Agent | 登录、设备发现、P2P SDP/ICE 信令、Agent 登记与保活 | 否；普通控制台回退属于下方数据面 |
+| 控制台数据面 | 浏览器、Agent、Codex | 对话命令、流式事件、审批、附件 | P2P 成功时否；回退时是 |
+| 端口映射数据面 | 外部 TCP 客户端、Relay、Agent、目标主机 | 指定公开端口的 TCP 字节流 | 仅接入侧 `外部客户端 <-> Relay`；Relay 到 Agent 必须是 P2P DataChannel |
+| 存储面 | Relay、MySQL、Relay `data` 卷、Agent 本地目录 | 账号、Token、元数据和附件 | 不适用；P2P 附件不落入 Relay |
+
 ### 组件边界
 
 ```text
-                         HTTPS / Cookie / API / SSE
-浏览器  <------------------------------------------------->  Relay 服务端
-  |                                                           |
-  | WebRTC DataChannel（优先）                                | MySQL 8.4
-  |                                                           | - 账号、Token、设备
-  +------------------------------->  本机 Agent  <-----------+ - 会话、事件、附件元数据
-                                      |  ^ Agent WebSocket
-                                      |  |（主动出站，回退控制与同步）
-                                      v  |
-                                本机 Codex app-server
-
-Relay 容器的 data 卷：仅保存服务端中转附件的二进制
-Agent 本地数据目录：P2P 附件、客户端配置与本地会话缓存
+                             控制面：HTTPS / WSS
+浏览器  <------------------------------->  Relay 服务端  <------------------ Agent
+  |             登录、设备、信令              |             Agent WebSocket（主动出站）  |
+  |                                           |                                      |
+  |                                           +--> MySQL + data 卷                  v
+  |                                                                          Codex app-server
+  |
+  +---------------- 控制台数据面：WebRTC DataChannel（优先） ---------------------> Agent
 ```
+
+Relay 容器的 `data` 卷仅保存服务端中转附件的二进制。Agent 本地数据目录保存 P2P 附件、客户端配置与本地会话缓存。
 
 | 组件 | 负责内容 | 不负责内容 |
 | --- | --- | --- |
@@ -32,17 +38,28 @@ Agent 本地数据目录：P2P 附件、客户端配置与本地会话缓存
 | MySQL / `data` 卷 | 账号、Token、设备、会话、事件、附件元数据与服务端中转附件 | 不保存 P2P 直传附件的二进制或本机 Codex 配置 |
 | 本机 Codex app-server | 线程、turn、模型、队列、审批和实际工具执行 | 不与公网直接通信 |
 
-### 三条传输链路
+### 连接建立与三条数据链路
+
+先建立控制面连接，再选择数据链路：
+
+```text
+1. Agent -- Token + WSS --> Relay                  （设备登记、保活、信令入口）
+2. 浏览器 -- Cookie + HTTPS/WSS --> Relay          （登录、设备选择、P2P 信令入口）
+3. 浏览器 <-- Relay 转发 SDP/ICE --> Agent          （仅为建立 DataChannel）
+4. 按场景选择下方 1、2 或 3 的数据链路
+```
+
+控制面始终经过 Relay，但它本身不等于业务数据中转。`WEBRTC_P2P_ONLY` 只影响下面的“控制台服务端回退”链路，**不改变**网页登录、设备发现、Agent 保活或 P2P 信令。
 
 #### 1. 控制台 P2P 直连：浏览器 <-> Agent
 
 ```text
-浏览器 --(HTTPS/WSS：仅交换 SDP/ICE)--> Relay --(Agent WebSocket)--> Agent
-浏览器 ================== WebRTC DataChannel ====================> Agent --> Codex
-          会话命令、流式事件、附件分块优先走这里
+浏览器 --(经 Relay 交换 SDP/ICE)--> Agent
+浏览器 ================= WebRTC DataChannel ==================> Agent --> Codex
+          对话命令、流式事件、审批和附件分块均优先走这里
 ```
 
-- 浏览器选择在线设备后，Relay 只在这条链路中传递 SDP/ICE 信令。
+- 浏览器选择在线设备后，Relay 只在建链阶段传递 SDP/ICE 信令。
 - 建立 DataChannel 后，会话命令、事件和附件优先直接在浏览器与 Agent 之间传输。
 - 目标电脑无需对外开放 HTTP 端口；Agent 始终是主动出站连接。
 
@@ -53,25 +70,36 @@ Agent 本地数据目录：P2P 附件、客户端配置与本地会话缓存
 ```
 
 - 仅当浏览器与 Agent 的 DataChannel 不可用，且 `WEBRTC_P2P_ONLY=false` 时启用。
-- 这是普通控制台业务的兼容路径，因此 Relay 并非在所有场景下都“只做信令”。
+- 此时 Relay 通过已有 Agent WebSocket 承载控制台命令和事件，因此它是**显式启用的普通业务中转**，不是 P2P 信令服务。
 - 当 `WEBRTC_P2P_ONLY=true` 时，这条回退路径被禁用；P2P 失败会直接报错。
 
-#### 3. P2P-only 端口映射：外部 TCP 客户端 <-> Relay <-> Agent <-> 目标主机
+#### 3. P2P-only 端口映射：受控 TCP 接入 + Relay 到 Agent 的 P2P
 
 ```text
-外部 TCP 客户端 --> Relay 公开端口
-                         || 独立 WebRTC DataChannel（Relay <-> Agent）
-                         vv
-                    本机 Agent --> targetHost:targetPort
-                                   ├─ 127.0.0.1：Agent 本机
-                                   └─ 192.168.x.x / 主机名：Agent 可访问的局域网主机
+外部 TCP 客户端 -- TCP --> Relay 公开端口
+                                || 为本次连接协商独立 WebRTC DataChannel
+                                vv
+                          Agent -- TCP --> targetHost:targetPort
+                                           ├─ 127.0.0.1：Agent 本机
+                                           └─ 192.168.x.x / 主机名：Agent 可访问的局域网主机
 ```
 
-- 公开 TCP 端口由 Relay 监听，但从 Relay 到 Agent 的数据段只能使用独立的 P2P DataChannel。
-- 打洞失败、设备离线、DataChannel 中断或目标主机不可达时，Relay 立即关闭该外部连接；**不会**改用 Agent WebSocket 或 HTTP 业务中转。
+- Relay 必须监听公开 TCP 端口以接收传统 TCP 客户端；这不是浏览器到 Agent 的端口直通。
+- Relay 到 Agent 的业务字节只能使用每连接独立的 P2P DataChannel，绝不复用 Agent WebSocket。
+- 打洞失败、设备离线、DataChannel 中断或目标主机不可达时，Relay 立即关闭外部连接；**不会**改用 Agent WebSocket、HTTP/SSE 或 TURN 兜底。
 - 端口映射仅支持 TCP。Docker 与防火墙不会自动开放端口，必须显式发布例如 `19022:19022/tcp`。
 
-### 部署拓扑与端口
+### 链路选择规则
+
+| 场景 | 实际业务链路 | Relay 是否传输业务内容 | 失败结果 |
+| --- | --- | --- | --- |
+| 网页登录、设备发现、P2P 协商 | 浏览器 <-> Relay；Agent <-> Relay | 是，属于控制面请求和信令 | 返回认证或连接错误 |
+| 控制台 P2P 建立成功 | 浏览器 <-> Agent | 否 | 继续使用直连 |
+| 控制台 P2P 失败且 `WEBRTC_P2P_ONLY=false` | 浏览器 <-> Relay <-> Agent | 是 | 使用服务端中转 |
+| 控制台 P2P 失败且 `WEBRTC_P2P_ONLY=true` | 不建立业务通道 | 否 | 明确报错，不中转 |
+| P2P 端口映射 | 外部 TCP <-> Relay；Relay <-> Agent 为独立 DataChannel | 仅接入侧必经 Relay | 关闭外部 TCP，不使用任何兜底 |
+
+### 部署拓扑与网络入口
 
 ```text
 Internet / 受控网络
@@ -80,11 +108,11 @@ Internet / 受控网络
   |                                      |
   |                                      +--> Docker 网络 --> MySQL:3306（不对外暴露）
   |
-  +-- 浏览器 / Agent -- 18787/udp ---> Docker Relay:8787/udp（STUN-only）
+  +-- 浏览器 / Agent -- 18787/udp ---> Docker Relay:8787/udp（STUN-only，帮助发现公网映射地址）
   |
   +-- 调试客户端 ------ 19022/tcp ---> Docker Relay:19022/tcp（按映射显式发布）
                                          |
-                                         +-- P2P DataChannel --> Agent --> 内网目标服务
+                                          +-- 独立 P2P DataChannel --> Agent --> 内网目标服务
 
 安装 Codex 的电脑 -- 主动 WSS --> 18787/tcp --> Relay
 ```
@@ -97,14 +125,14 @@ Internet / 受控网络
 | `WEBRTC_STUN_PUBLIC_HOST` | 公网 STUN 主机名；留空时从网页请求 Host 推导 | 默认留空 |
 | `WEBRTC_P2P_ONLY` | 普通控制台在 P2P 失败时是否禁止回退 | 默认 `false` |
 
-Relay 自带 STUN-only 服务，只响应 STUN Binding 请求以发现公网映射地址，不提供 TURN，也不转发浏览器与 Agent 的 DataChannel 流量。需要外部 STUN 时才额外设置 `WEBRTC_STUN_SERVERS`；默认无需依赖第三方 STUN 服务。
+Relay 自带 STUN-only 服务，只响应 STUN Binding 请求以发现公网映射地址。它不交换 SDP/ICE、不提供 TURN、也不转发浏览器与 Agent 的 DataChannel 流量。需要外部 STUN 时才额外设置 `WEBRTC_STUN_SERVERS`；默认无需依赖第三方 STUN 服务。
 
 ### 安全与数据边界
 
 - API Key、CCS 配置和 Codex 配置只留在运行 Codex 的电脑上。
-- 账号、Token、设备、会话、事件和图片元数据保存到 MySQL；服务端中转附件二进制保存到 Docker `data` 卷。
-- P2P 直传附件保存到 Agent 本地目录，不经过 Relay 附件存储。
-- 本机 Agent 不开放入站 HTTP 服务；外部访问只能经过 Relay 的认证、信令或显式发布的端口映射入口。
+- 账号、Token、设备、会话、事件和图片元数据保存到 MySQL；仅普通控制台回退时的附件二进制保存到 Docker `data` 卷。
+- 控制台 P2P 直传附件保存到 Agent 本地目录，不经过 Relay 附件存储。
+- 本机 Agent 不开放入站 HTTP 服务；外部访问只能经过 Relay 的认证入口、信令入口或显式发布的端口映射入口。
 
 STUN 地址、端口映射和 P2P-only 开关都是公开服务配置，应直接在 `docker-compose.yml` 的 Relay `environment` 与 `ports` 中修改，不放入 `.env`。部署细节见 [docs/RELAY.md](docs/RELAY.md)，接口边界见 [docs/API.md](docs/API.md)。
 

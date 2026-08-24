@@ -1,11 +1,18 @@
 # Codex Remote 中心服务 / 本机客户端
 
-中心服务端使用 Docker Compose 部署，MySQL 保存账号、Token、设备、会话和事件，`data` 卷保存服务端中转模式的文件。运行 Codex 的电脑只运行轻量客户端 agent；它主动通过 WebSocket 连接服务端，因此客户端不开放 HTTP 端口，也不需要远程桌面。
+中心服务端使用 Docker Compose 部署，MySQL 保存账号、Token、设备、会话和事件，`data` 卷仅保存普通控制台回退时的附件。运行 Codex 的电脑只运行轻量客户端 Agent；它主动通过 WebSocket 连接服务端，因此客户端不开放 HTTP 端口，也不需要远程桌面。
 
 ```text
-手机浏览器 <-> 中心服务端（网页 / API / SSE） <-> WebSocket <-> 本机 agent <-> 本机 Codex
-     \_____________________ WebRTC DataChannel _____________________/
+控制面：浏览器 -- HTTPS / WSS --> Relay <-- Agent WebSocket -- Agent --> Codex
+         登录、设备、SDP/ICE 信令          登记、保活、信令、普通业务回退入口
+
+控制台数据面：浏览器 === WebRTC DataChannel === Agent --> Codex                 [优先]
+              浏览器 -- HTTP/SSE --> Relay -- Agent WebSocket --> Agent --> Codex [回退]
+
+端口映射数据面：外部 TCP --> Relay 公开端口 === 独立 DataChannel === Agent --> 目标主机
 ```
+
+Relay 接收控制面请求并提供普通控制台回退，但不会在 P2P 成功时承载控制台业务字节。端口映射中，Relay 必须接收外部 TCP 连接；仅 Relay 到 Agent 的这一段严格要求 P2P，且没有 Agent WebSocket/HTTP/TURN 兜底。
 
 ## 部署服务端
 

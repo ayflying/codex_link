@@ -84,23 +84,26 @@ Codex Link 是一个手机优先的远程 Codex 控制台。用户在浏览器�
 
 ## 6. 产品架构与数据流
 
-```text
-浏览器
-  |  网页、登录、普通 API、P2P 信令
-Relay + MySQL
-  |  Agent WebSocket（设备登记、回退控制、同步）
-本机 Agent
-  |  本机 app-server 协议
-Codex
+系统必须把控制面与数据面分开实现和描述：
 
-浏览器 <========== WebRTC DataChannel ==========> 本机 Agent
+```text
+控制面（始终存在）
+浏览器 -- HTTPS / WSS --> Relay <-- Token + Agent WebSocket -- Agent --> Codex app-server
+                  登录、设备发现、SDP/ICE 信令        设备登记、保活、信令、回退入口
+
+控制台数据面（按 P2P 状态二选一）
+浏览器 ========== WebRTC DataChannel ==========> Agent --> Codex              [优先]
+浏览器 -- HTTP / SSE --> Relay -- Agent WebSocket --> Agent --> Codex          [仅回退]
+
+端口映射数据面（始终 P2P-only）
+外部 TCP 客户端 -- TCP --> Relay 公开端口 == 独立 DataChannel ==> Agent -- TCP --> 目标主机
 ```
 
-1. Agent 主动以 Token 建立到 Relay 的 WebSocket，不要求目标电脑开放入站 HTTP 端口。
-2. 浏览器选择在线设备后，通过 Relay 交换 SDP 与 ICE candidate；Relay 仅参与信令。
-3. P2P 建立后，优先在 DataChannel 上传输控制台命令、会话事件和附件分块。
-4. P2P 不可用时，普通业务按照 `WEBRTC_P2P_ONLY` 策略回退或失败；网页登录、设备发现与信令始终由 Relay 提供。
-5. 账号、Token、设备、会话、事件与附件元数据写入 MySQL；服务端中转附件的二进制写入 `data` 卷。P2P 附件直接写入 Agent 本地数据目录。
+1. Agent 主动以 Token 建立到 Relay 的 WebSocket，不要求目标电脑开放入站 HTTP 端口。该连接用于设备登记、保活、信令和普通控制台回退，不能用作端口映射的数据回退。
+2. 浏览器选择在线设备后，通过 Relay 交换 SDP 与 ICE candidate；P2P 建立后，控制台命令、事件和附件分块优先走浏览器与 Agent 之间的 DataChannel。
+3. P2P 不可用时，普通控制台根据 `WEBRTC_P2P_ONLY` 选择服务端回退或失败。网页登录、设备发现与信令始终由 Relay 提供，且不受该开关影响。
+4. 端口映射的 Relay 公开端口只接收传统 TCP 客户端；Relay 到 Agent 的每个连接都必须建立独立 DataChannel。打洞失败时关闭外部 TCP 连接，不得用 Agent WebSocket、HTTP/SSE 或 TURN 补偿。
+5. 账号、Token、设备、会话、事件与附件元数据写入 MySQL；普通控制台回退的附件二进制写入 `data` 卷。控制台 P2P 附件直接写入 Agent 本地数据目录。
 
 ## 7. 功能需求
 
