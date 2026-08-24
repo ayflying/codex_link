@@ -47,6 +47,7 @@ import {
   getDevices,
   getHealth,
   getModels,
+  getSessionHistory,
   getPortMappings,
   getSettings,
   getThreads,
@@ -126,12 +127,18 @@ const renderLimit = ref(160);
 const forceScrollToBottom = ref(false);
 const sidebarOpen = ref(false);
 const collapsedProjects = ref<Set<string>>(new Set());
+const listPageSize = 6;
+const visibleProjectCount = ref(listPageSize);
+const visibleRecentCount = ref(listPageSize);
+const visibleProjectSessionCounts = ref<Record<string, number>>({});
 const projectOrder = ref<string[]>([]);
 const recentOrder = ref<string[]>([]);
 const theme = ref<"light" | "dark">("dark");
 const composerDropActive = ref(false);
 const dragState = ref<{ kind: "project" | "recent"; id: string } | null>(null);
 const dragOverKey = ref("");
+const historyLoading = ref(false);
+const historyHasMore = ref(false);
 const pendingRemoteEvents = new Map<string, RemoteEvent>();
 
 const projectOrderStorageKey = "codex-link-project-order";
@@ -169,10 +176,14 @@ const recentSessions = computed(() => {
   const recent = sessions.value.filter((session) => !session.cwd);
   return applyStoredOrder(recent, recentOrder.value, (session) => session.id);
 });
+const visibleProjectGroups = computed(() => groupedSessions.value.slice(0, visibleProjectCount.value));
+const visibleRecentSessions = computed(() => recentSessions.value.slice(0, visibleRecentCount.value));
+const hasMoreProjects = computed(() => visibleProjectCount.value < groupedSessions.value.length);
+const hasMoreRecentSessions = computed(() => visibleRecentCount.value < recentSessions.value.length);
 const orderedSessionCount = computed(() => groupedSessions.value.reduce((total, group) => total + group.sessions.length, 0) + recentSessions.value.length);
 const activeProjectCwd = computed(() => activeSession.value?.cwd || "");
 const visibleSessionCount = computed(() =>
-  groupedSessions.value.reduce((total, group) => total + (isProjectCollapsed(group.cwd) ? 0 : group.sessions.length), 0) + recentSessions.value.length
+  visibleProjectGroups.value.reduce((total, group) => total + (isProjectCollapsed(group.cwd) ? 0 : visibleProjectSessions(group).length), 0) + visibleRecentSessions.value.length
 );
 const pendingApprovals = computed(() => {
   const resolved = new Set(
@@ -212,6 +223,7 @@ const displayEvents = computed(() => {
   }, []);
 });
 const hiddenEventCount = computed(() => Math.max(0, displayEvents.value.length - renderLimit.value));
+const hasEarlierEvents = computed(() => historyHasMore.value || hiddenEventCount.value > 0);
 const visibleEvents = computed(() => displayEvents.value.slice(-renderLimit.value));
 
 onMounted(async () => {
@@ -231,6 +243,7 @@ watch(activeSessionId, (sessionId) => {
 
 watch(() => events.value.length, async () => {
   await nextTick();
+  if (historyLoading.value) return;
   if (forceScrollToBottom.value) {
     await scrollTranscriptToBottom();
     forceScrollToBottom.value = false;
@@ -238,6 +251,8 @@ watch(() => events.value.length, async () => {
   }
   const element = transcriptEl.value;
   if (!element) return;
+  const nearBottom = element.scrollHeight - element.clientHeight - element.scrollTop < 96;
+  if (!nearBottom) return;
   element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
 });
 
@@ -1038,16 +1053,69 @@ async function cancel() {
   );
 }
 
+function mergeEvents(existing: RemoteEvent[], incoming: RemoteEvent[]) {
+  const merged = new Map<string, RemoteEvent>();
+  for (const event of [...existing, ...incoming]) merged.set(eventKey(event), event);
+  return [...merged.values()].sort((a, b) => a.id - b.id);
+}
+
+async function loadEventPage(sessionId: string, before: number, replace = false) {
+  if (historyLoading.value) return false;
+  historyLoading.value = true;
+  try {
+    const result = await commandWithFallback<{ events: RemoteEvent[]; hasMore: boolean }>(
+      "events.list",
+      { id: sessionId, before, limit: listPageSize },
+      () => getSessionHistory(sessionId, before, listPageSize)
+    );
+    if (activeSessionId.value !== sessionId) return false;
+    events.value = mergeEvents(events.value, result.events || []);
+    historyHasMore.value = Boolean(result.hasMore);
+    if (replace) renderLimit.value = listPageSize;
+    else renderLimit.value += listPageSize;
+    return true;
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason);
+    return false;
+  } finally {
+    historyLoading.value = false;
+  }
+}
+
+async function loadOlderEvents() {
+  if (!activeSession.value || historyLoading.value || !hasEarlierEvents.value) return;
+  const element = transcriptEl.value;
+  const previousHeight = element?.scrollHeight || 0;
+  const previousTop = element?.scrollTop || 0;
+  if (!historyHasMore.value) {
+    renderLimit.value += listPageSize;
+    await nextTick();
+    if (element) element.scrollTop = previousTop + element.scrollHeight - previousHeight;
+    return;
+  }
+  const oldest = [...events.value].sort((a, b) => a.id - b.id)[0]?.id || 0;
+  if (!oldest) {
+    historyHasMore.value = false;
+    return;
+  }
+  const loaded = await loadEventPage(activeSession.value.id, oldest);
+  if (!loaded || !element) return;
+  await nextTick();
+  element.scrollTop = previousTop + element.scrollHeight - previousHeight;
+}
+
 function connectEvents(sessionId: string, reset = true) {
   eventSource.value?.close();
   if (reset) {
     events.value = [];
-    renderLimit.value = 160;
+    renderLimit.value = listPageSize;
+    historyHasMore.value = false;
     forceScrollToBottom.value = true;
   }
   if (!sessionId) return;
 
   drainPendingEvents(sessionId);
+  void loadEventPage(sessionId, 0, true);
 
   if (p2p.isConnected()) {
     streamState.value = "connected";
@@ -1061,7 +1129,7 @@ function connectEvents(sessionId: string, reset = true) {
   }
 
   streamState.value = "reconnecting";
-  const source = new EventSource(`/api/sessions/${sessionId}/events`);
+  const source = new EventSource(`/api/sessions/${sessionId}/events?limit=${listPageSize}`);
   eventSource.value = source;
 
   source.onopen = () => {
@@ -1183,6 +1251,29 @@ function projectLabel(cwd: string) {
 
 function isProjectCollapsed(cwd: string) {
   return collapsedProjects.value.has(cwd);
+}
+
+function visibleProjectSessions(group: { cwd: string; sessions: SessionRecord[] }) {
+  return group.sessions.slice(0, visibleProjectSessionCounts.value[group.cwd] || listPageSize);
+}
+
+function hasMoreProjectSessions(group: { cwd: string; sessions: SessionRecord[] }) {
+  return visibleProjectSessions(group).length < group.sessions.length;
+}
+
+function showMoreProjects() {
+  visibleProjectCount.value += listPageSize;
+}
+
+function showMoreRecentSessions() {
+  visibleRecentCount.value += listPageSize;
+}
+
+function showMoreProjectSessions(cwd: string) {
+  visibleProjectSessionCounts.value = {
+    ...visibleProjectSessionCounts.value,
+    [cwd]: (visibleProjectSessionCounts.value[cwd] || listPageSize) + listPageSize
+  };
 }
 
 function toggleProject(cwd: string) {
@@ -1835,7 +1926,7 @@ function transportLabel(status: typeof transportState.value) {
             </div>
             <div class="project-list">
               <section
-                v-for="group in groupedSessions"
+                v-for="group in visibleProjectGroups"
                 :key="group.cwd"
                 class="session-project-group"
                 :class="{ 'drag-over': dragOverKey === dragKey('project', group.cwd) }"
@@ -1864,7 +1955,7 @@ function transportLabel(status: typeof transportState.value) {
                   ><GripVertical :size="15" /></span>
                 </div>
                 <article
-                  v-for="session in group.sessions"
+                  v-for="session in visibleProjectSessions(group)"
                   v-show="!isProjectCollapsed(group.cwd)"
                   :key="session.id"
                   :data-session-id="session.id"
@@ -1883,9 +1974,15 @@ function transportLabel(status: typeof transportState.value) {
                     <Trash2 :size="15" />
                   </button>
                 </article>
+                <button v-if="!isProjectCollapsed(group.cwd) && hasMoreProjectSessions(group)" class="list-more" type="button" @click="showMoreProjectSessions(group.cwd)">
+                  展开更多对话（每次 {{ listPageSize }} 条）
+                </button>
               </section>
             </div>
             <div v-if="!groupedSessions.length" class="sidebar-empty">还没有项目对话</div>
+            <button v-if="hasMoreProjects" class="list-more" type="button" @click="showMoreProjects">
+              展开更多项目（每次 {{ listPageSize }} 个）
+            </button>
           </section>
 
           <section class="sidebar-section recent-section">
@@ -1895,7 +1992,7 @@ function transportLabel(status: typeof transportState.value) {
             </div>
             <div class="recent-list">
               <article
-                v-for="session in recentSessions"
+                v-for="session in visibleRecentSessions"
                 :key="session.id"
                 :data-session-id="session.id"
                 class="session-pill recent-session-pill"
@@ -1920,6 +2017,9 @@ function transportLabel(status: typeof transportState.value) {
               </article>
             </div>
             <div v-if="!recentSessions.length" class="sidebar-empty">暂无非项目对话</div>
+            <button v-if="hasMoreRecentSessions" class="list-more" type="button" @click="showMoreRecentSessions">
+              展开更多对话（每次 {{ listPageSize }} 条）
+            </button>
           </section>
         </div>
       </aside>
@@ -1974,8 +2074,8 @@ function transportLabel(status: typeof transportState.value) {
         <span>{{ statusLabel(activeSession.status) }}</span>
       </article>
 
-      <button v-if="hiddenEventCount" class="load-older" type="button" @click="renderLimit += 160">
-        显示更早 {{ Math.min(hiddenEventCount, 160) }} 条
+      <button v-if="hasEarlierEvents" class="load-older" type="button" :disabled="historyLoading" @click="loadOlderEvents">
+        {{ historyLoading ? "正在加载更早内容" : `显示更早 ${listPageSize} 条` }}
       </button>
 
       <article

@@ -242,6 +242,25 @@ func (s *Store) Events(sessionID string, after int64, limit int) []Event {
 	return events
 }
 
+func (s *Store) EventsBefore(sessionID string, before int64, limit int) ([]Event, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 {
+		limit = 6
+	}
+	events := []Event{}
+	for _, event := range s.events {
+		if event.SessionID != sessionID || (before > 0 && event.ID >= before) {
+			continue
+		}
+		events = append(events, event)
+	}
+	if len(events) <= limit {
+		return events, false
+	}
+	return events[len(events)-limit:], true
+}
+
 func (s *Store) Append(event Event) Event {
 	s.mu.Lock()
 	s.nextID++
@@ -256,6 +275,19 @@ func (s *Store) Append(event Event) Event {
 	if hook != nil {
 		hook(event)
 	}
+	return event
+}
+
+func (s *Store) AppendLocal(event Event) Event {
+	s.mu.Lock()
+	s.nextID++
+	event.ID = s.nextID
+	s.events = append(s.events, event)
+	if len(s.events) > 3000 {
+		s.events = s.events[len(s.events)-3000:]
+	}
+	s.persistLocked()
+	s.mu.Unlock()
 	return event
 }
 
@@ -831,6 +863,15 @@ func (b *Bridge) Cancel() error {
 }
 
 func (b *Bridge) hydrateThread(thread map[string]interface{}) {
+	b.mu.Lock()
+	sessionID := ""
+	if b.session != nil {
+		sessionID = b.session.ID
+	}
+	b.mu.Unlock()
+	if sessionID == "" {
+		return
+	}
 	turns, _ := thread["turns"].([]interface{})
 	limit := intEnv("CODEX_HISTORY_TURN_LIMIT", 10)
 	if len(turns) > limit {
@@ -853,16 +894,16 @@ func (b *Bridge) hydrateThread(thread map[string]interface{}) {
 					}
 				}
 				if text := strings.Join(parts, ""); text != "" {
-					b.emitAt("user.message", map[string]interface{}{"text": text}, ts)
+					b.store.AppendLocal(Event{SessionID: sessionID, Type: "user.message", TS: ts, Payload: map[string]interface{}{"text": text}})
 				}
 			case "agentMessage":
 				if text := stringValue(item["text"]); text != "" {
-					b.emitAt("assistant.delta", map[string]interface{}{"text": text}, ts)
+					b.store.AppendLocal(Event{SessionID: sessionID, Type: "assistant.delta", TS: ts, Payload: map[string]interface{}{"text": text}})
 				}
 			case "commandExecution":
-				b.emitAt("tool.started", map[string]interface{}{"command": stringValue(firstNonEmpty(item["command"], "命令执行"))}, ts)
+				b.store.AppendLocal(Event{SessionID: sessionID, Type: "tool.started", TS: ts, Payload: map[string]interface{}{"command": stringValue(firstNonEmpty(item["command"], "命令执行"))}})
 				if output := stringValue(item["aggregatedOutput"]); output != "" {
-					b.emitAt("tool.output", map[string]interface{}{"text": output}, ts)
+					b.store.AppendLocal(Event{SessionID: sessionID, Type: "tool.output", TS: ts, Payload: map[string]interface{}{"text": output}})
 				}
 			}
 		}

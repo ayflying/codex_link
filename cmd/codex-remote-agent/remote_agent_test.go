@@ -183,6 +183,29 @@ func TestResumeThreadReusesAttachedThreadAndKeepsEvents(t *testing.T) {
 	}
 }
 
+func TestStoreEventsBeforePagesHistoryWithoutBroadcastingLocalHydration(t *testing.T) {
+	store := NewStore(t.TempDir())
+	hooked := 0
+	store.SetEventHook(func(Event) { hooked++ })
+	for index := 0; index < 8; index++ {
+		store.Append(Event{SessionID: "thread-page", Type: "assistant.delta"})
+	}
+	store.AppendLocal(Event{SessionID: "thread-page", Type: "user.message"})
+	store.AppendLocal(Event{SessionID: "thread-page", Type: "assistant.delta"})
+
+	latest, hasMore := store.EventsBefore("thread-page", 0, 6)
+	if len(latest) != 6 || !hasMore || latest[0].ID != 5 || latest[len(latest)-1].ID != 10 {
+		t.Fatalf("unexpected latest history page: len=%d hasMore=%v events=%#v", len(latest), hasMore, latest)
+	}
+	older, hasMore := store.EventsBefore("thread-page", latest[0].ID, 6)
+	if len(older) != 4 || hasMore || older[0].ID != 1 || older[len(older)-1].ID != 4 {
+		t.Fatalf("unexpected older history page: len=%d hasMore=%v events=%#v", len(older), hasMore, older)
+	}
+	if hooked != 8 {
+		t.Fatalf("local hydration events should not be broadcast: got %d hooks", hooked)
+	}
+}
+
 func TestParseTokenUsage(t *testing.T) {
 	window := int64(114688)
 	got := parseTokenUsage(map[string]interface{}{

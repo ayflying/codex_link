@@ -299,6 +299,12 @@ export async function resumeThread(threadId: string) {
   return request<{ session: SessionRecord }>(`/api/threads/${threadId}/resume`, { method: "POST" });
 }
 
+export async function getSessionHistory(sessionId: string, before = 0, limit = 6) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (before > 0) params.set("before", String(before));
+  return request<{ events: RemoteEvent[]; hasMore: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/history?${params}`);
+}
+
 export async function deleteThread(threadId: string) {
   return request(`/api/threads/${threadId}`, { method: "DELETE" });
 }

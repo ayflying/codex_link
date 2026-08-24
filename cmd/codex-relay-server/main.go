@@ -28,7 +28,7 @@ import (
 const (
 	authCookieName            = "codex_relay_session"
 	passwordIterations        = 120000
-	defaultEventBacklog       = 120
+	defaultEventBacklog       = 6
 	maxImageBytes             = 10 * 1024 * 1024
 	defaultRequestTimeoutSecs = 35
 )
@@ -1496,6 +1496,33 @@ func (s *relayServer) sessionAction(w http.ResponseWriter, request *http.Request
 	sessionID, action := parts[0], parts[1]
 	if action == "events" {
 		s.sse(w, request, user.ID, sessionID)
+		return
+	}
+	if action == "history" {
+		if request.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		deviceID, err := s.resolveDevice(user.ID, request, sessionID)
+		if err != nil {
+			writeErrorStatus(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		before, _ := strconv.ParseInt(request.URL.Query().Get("before"), 10, 64)
+		limit, _ := strconv.Atoi(request.URL.Query().Get("limit"))
+		if limit <= 0 || limit > 50 {
+			limit = defaultEventBacklog
+		}
+		result, err := s.command(user.ID, deviceID, "events.list", map[string]interface{}{
+			"id":     sessionID,
+			"before": before,
+			"limit":  limit,
+		})
+		if err != nil {
+			writeErrorStatus(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeRawJSON(w, result)
 		return
 	}
 	if request.Method != http.MethodPost {

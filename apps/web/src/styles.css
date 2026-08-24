@@ -592,6 +592,9 @@ button:disabled { cursor: not-allowed; opacity: 0.5; transform: none !important;
 .drag-handle:active { cursor: grabbing; }
 .session-project-group.drag-over > .project-heading-row, .recent-session-pill.drag-over { border-radius: 5px; outline: 1px dashed #63d6c8; outline-offset: 2px; }
 .sidebar-empty { padding: 6px 4px; color: #718992; font-size: 11px; }
+.list-more { min-height: 30px; padding: 0 9px; border: 1px solid rgba(113, 223, 210, 0.22); border-radius: 5px; background: rgba(113, 223, 210, 0.08); color: #71dfd2; font-size: 11px; cursor: pointer; transition: background-color 140ms ease, border-color 140ms ease; }
+.list-more:hover { border-color: rgba(113, 223, 210, 0.5); background: rgba(113, 223, 210, 0.15); }
+.list-more:disabled { cursor: wait; }
 
 .session-pill { min-height: 78px; display: grid; grid-template-columns: minmax(0, 1fr) 34px; align-items: center; border: 1px solid rgba(215, 232, 242, 0.12); border-radius: 5px; background: rgba(255, 255, 255, 0.055); color: #eaf3f7; transition: border-color 140ms ease, background-color 140ms ease; }
 .session-pill:hover { border-color: rgba(113, 223, 210, 0.38); background: rgba(255, 255, 255, 0.09); }

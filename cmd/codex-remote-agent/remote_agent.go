@@ -326,6 +326,21 @@ func (a *remoteAgent) executeCommand(action string, payload json.RawMessage) (in
 			a.store.UpsertSession(session)
 		}
 		return map[string]interface{}{"sessions": sessions}, nil
+	case "events.list":
+		var body struct {
+			ID     string `json:"id"`
+			Before int64  `json:"before"`
+			Limit  int    `json:"limit"`
+		}
+		_ = json.Unmarshal(payload, &body)
+		if body.ID == "" {
+			return nil, errors.New("缺少会话 ID")
+		}
+		if body.Limit <= 0 || body.Limit > 50 {
+			body.Limit = 6
+		}
+		events, hasMore := a.store.EventsBefore(body.ID, body.Before, body.Limit)
+		return map[string]interface{}{"events": events, "hasMore": hasMore}, nil
 	case "models.list":
 		models, err := a.bridge.ListModels()
 		if err != nil {
