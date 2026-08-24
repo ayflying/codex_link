@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -32,6 +33,7 @@ const (
 	wmAgentExited     = win.WM_APP + 3
 	wmPollState       = win.WM_APP + 4
 	wmTrayError       = win.WM_APP + 5
+	wmInitializeTray  = win.WM_APP + 6
 )
 
 type clientGUI struct {
@@ -74,6 +76,9 @@ type guiConnectResult struct {
 }
 
 func runClientGUI(root, cwd, dataDir string) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	releaseInstance, err := acquireInstance("gui", dataDir)
 	if err != nil {
 		if errors.Is(err, errInstanceAlreadyRunning) {
@@ -126,7 +131,8 @@ func runClientGUI(root, cwd, dataDir string) error {
 
 	win.ShowWindow(hwnd, win.SW_SHOWNORMAL)
 	win.UpdateWindow(hwnd)
-	gui.startTrayInitialization()
+	// 先进入消息循环，再异步初始化托盘，避免 Shell API 阻塞窗口创建阶段。
+	win.PostMessage(hwnd, wmInitializeTray, 0, 0)
 
 	var message win.MSG
 	for win.GetMessage(&message, 0, 0, 0) > 0 {
@@ -164,6 +170,8 @@ func clientWindowProc(hwnd win.HWND, message uint32, wParam, lParam uintptr) uin
 		gui.handlePollState()
 	case wmTrayError:
 		gui.handleTrayError()
+	case wmInitializeTray:
+		gui.startTrayInitialization()
 	case win.WM_CLOSE:
 		if gui.isQuitting() {
 			win.DestroyWindow(hwnd)
