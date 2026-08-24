@@ -268,6 +268,41 @@ func TestStoreEventsBeforePagesHistoryWithoutBroadcastingLocalHydration(t *testi
 	}
 }
 
+func TestStoreAppendLocalBatchPersistsWithoutBroadcasting(t *testing.T) {
+	store := NewStore(t.TempDir())
+	broadcasts := 0
+	store.SetEventHook(func(Event) { broadcasts++ })
+
+	events := store.AppendLocalBatch([]Event{
+		{SessionID: "thread-batch", Type: "user.message", Payload: map[string]interface{}{"text": "第一条"}},
+		{SessionID: "thread-batch", Type: "assistant.delta", Payload: map[string]interface{}{"text": "第二条"}},
+	})
+	if len(events) != 2 || events[0].ID != 1 || events[1].ID != 2 {
+		t.Fatalf("unexpected batched events: %#v", events)
+	}
+	if broadcasts != 0 {
+		t.Fatalf("local batch hydration should not be broadcast: %d", broadcasts)
+	}
+	persisted := store.Events("thread-batch", 0, 10)
+	if len(persisted) != 2 || persisted[0].Payload["text"] != "第一条" || persisted[1].Payload["text"] != "第二条" {
+		t.Fatalf("batch was not persisted: %#v", persisted)
+	}
+}
+
+func TestStoreUpsertSessionLocalDoesNotBroadcast(t *testing.T) {
+	store := NewStore(t.TempDir())
+	broadcasts := 0
+	store.SetSessionHook(func(Session) { broadcasts++ })
+	store.UpsertSessionLocal(Session{ID: "thread-local", Title: "只在本地更新"})
+	if broadcasts != 0 {
+		t.Fatalf("local session update should not be broadcast: %d", broadcasts)
+	}
+	sessions := store.Sessions()
+	if len(sessions) != 1 || sessions[0].ID != "thread-local" {
+		t.Fatalf("local session update was not persisted: %#v", sessions)
+	}
+}
+
 func TestParseTokenUsage(t *testing.T) {
 	window := int64(114688)
 	got := parseTokenUsage(map[string]interface{}{

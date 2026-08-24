@@ -164,13 +164,21 @@ func (s *Store) persistLocked() {
 }
 
 func (s *Store) UpsertSession(session Session) {
+	s.upsertSession(session, true)
+}
+
+func (s *Store) UpsertSessionLocal(session Session) {
+	s.upsertSession(session, false)
+}
+
+func (s *Store) upsertSession(session Session, notify bool) {
 	s.mu.Lock()
 	session = mergeSessionMetadata(s.sessions[session.ID], session)
 	s.sessions[session.ID] = session
 	s.persistLocked()
 	hook := s.sessionHook
 	s.mu.Unlock()
-	if hook != nil {
+	if notify && hook != nil {
 		hook(session)
 	}
 }
@@ -306,6 +314,24 @@ func (s *Store) AppendLocal(event Event) Event {
 	s.persistLocked()
 	s.mu.Unlock()
 	return event
+}
+
+func (s *Store) AppendLocalBatch(events []Event) []Event {
+	if len(events) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := range events {
+		s.nextID++
+		events[index].ID = s.nextID
+		s.events = append(s.events, events[index])
+	}
+	if len(s.events) > 3000 {
+		s.events = s.events[len(s.events)-3000:]
+	}
+	s.persistLocked()
+	return events
 }
 
 func filterEvents(events []Event, keep func(Event) bool) []Event {
@@ -787,7 +813,7 @@ func (b *Bridge) readThreadWhileWriterIsActive(threadID string) (Session, error)
 	b.readOnlyThreads[session.ID] = session
 	b.mu.Unlock()
 	b.store.ClearEvents(session.ID)
-	b.store.UpsertSession(session)
+	b.store.UpsertSessionLocal(session)
 	b.hydrateThread(session.ID, thread)
 	return session, nil
 }
@@ -1212,6 +1238,7 @@ func (b *Bridge) hydrateThread(sessionID string, thread map[string]interface{}) 
 	if len(turns) > limit {
 		turns = turns[len(turns)-limit:]
 	}
+	events := make([]Event, 0, len(turns)*2)
 	for _, rawTurn := range turns {
 		turn := asMap(rawTurn)
 		ts := timestampToISO(turn["startedAt"])
@@ -1229,20 +1256,21 @@ func (b *Bridge) hydrateThread(sessionID string, thread map[string]interface{}) 
 					}
 				}
 				if text := strings.Join(parts, ""); text != "" {
-					b.store.AppendLocal(Event{SessionID: sessionID, Type: "user.message", TS: ts, Payload: map[string]interface{}{"text": text}})
+					events = append(events, Event{SessionID: sessionID, Type: "user.message", TS: ts, Payload: map[string]interface{}{"text": text}})
 				}
 			case "agentMessage":
 				if text := stringValue(item["text"]); text != "" {
-					b.store.AppendLocal(Event{SessionID: sessionID, Type: "assistant.delta", TS: ts, Payload: map[string]interface{}{"text": text}})
+					events = append(events, Event{SessionID: sessionID, Type: "assistant.delta", TS: ts, Payload: map[string]interface{}{"text": text}})
 				}
 			case "commandExecution":
-				b.store.AppendLocal(Event{SessionID: sessionID, Type: "tool.started", TS: ts, Payload: map[string]interface{}{"command": stringValue(firstNonEmpty(item["command"], "命令执行"))}})
+				events = append(events, Event{SessionID: sessionID, Type: "tool.started", TS: ts, Payload: map[string]interface{}{"command": stringValue(firstNonEmpty(item["command"], "命令执行"))}})
 				if output := stringValue(item["aggregatedOutput"]); output != "" {
-					b.store.AppendLocal(Event{SessionID: sessionID, Type: "tool.output", TS: ts, Payload: map[string]interface{}{"text": output}})
+					events = append(events, Event{SessionID: sessionID, Type: "tool.output", TS: ts, Payload: map[string]interface{}{"text": output}})
 				}
 			}
 		}
 	}
+	b.store.AppendLocalBatch(events)
 }
 
 func (b *Bridge) updateStatus(status string) {

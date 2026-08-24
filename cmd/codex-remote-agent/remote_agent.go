@@ -369,7 +369,7 @@ func (a *remoteAgent) executeCommand(action string, payload json.RawMessage) (in
 		if err != nil {
 			return nil, err
 		}
-		a.store.UpsertSession(session)
+		a.store.UpsertSessionLocal(session)
 		return map[string]interface{}{"session": session}, nil
 	case "threads.archive":
 		var body struct {

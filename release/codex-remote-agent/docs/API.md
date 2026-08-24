@@ -260,20 +260,40 @@ GET /api/sessions/<session-id>/events?after=120
 
 服务端最多回放 `EVENT_BACKLOG_LIMIT` 条事件，默认 120 条；实时事件仍通过进程内广播发送。事件类型包括：
 
-`session.status`、`user.message`、`assistant.delta`、`tool.started`、`tool.output`、`approval.requested`、`approval.resolved`、`turn.done`、`context.usage`、`error`。
+`session.status`、`user.message`、`assistant.delta`、`tool.started`、`tool.output`、`approval.requested`、`approval.resolved`、`turn.done`、`context.usage`、`queue.changed`、`goal.updated`、`goal.cleared`、`error`。
 
 ### POST `/api/sessions/:id/messages`
 
-发送消息，可附带已上传的图片附件。
+发送消息，可附带已上传的文件附件。
 
 ```json
 {
-  "text": "请检查这个截图",
+  "text": "请检查这些附件",
   "attachments": [
-    { "id": "图片附件 ID" }
+    { "id": "附件 ID" }
   ]
 }
 ```
+
+### GET `/api/sessions/:id/queue`
+
+读取当前线程的原生 Codex 待发送队列。
+
+### POST `/api/sessions/:id/queue`
+
+管理原生队列。`operation` 可为 `add`、`update`、`delete`、`reorder` 或 `promote`；`promote` 会把指定消息调整到当前运行中的 turn，空闲时则直接启动它。
+
+```json
+{
+  "operation": "add",
+  "text": "等当前操作完成后再运行测试",
+  "attachments": [{ "id": "附件 ID" }]
+}
+```
+
+### GET / POST `/api/sessions/:id/goal`
+
+读取或设置 Codex 线程目标。POST `{ "objective": "完成发布并验证" }` 设置目标，POST `{ "clear": true }` 清除目标。
 
 ### POST `/api/sessions/:id/approvals`
 
@@ -290,11 +310,11 @@ GET /api/sessions/<session-id>/events?after=120
 
 取消当前 turn。
 
-## 图片附件
+## 文件附件
 
 ### POST `/api/uploads`
 
-上传 Base64 图片。图片二进制写入 Docker `data` volume 的 `UPLOAD_DIR`，MySQL 只保存文件路径、名称、类型、大小和所属用户。
+上传 Base64 文件。文件二进制写入 Docker `data` volume 的 `UPLOAD_DIR`，MySQL 只保存文件路径、名称、类型、大小和所属用户。
 
 ```json
 {
@@ -304,11 +324,11 @@ GET /api/sessions/<session-id>/events?after=120
 }
 ```
 
-单张图片上限为 10 MB。响应返回附件 ID，之后在消息中引用该 ID。
+单个文件上限为 16 MB。响应返回附件 ID，之后在消息或队列中引用该 ID。
 
 ### GET `/api/uploads/:id`
 
-读取当前用户自己的图片附件。
+读取当前用户自己的文件附件。
 
 ## 错误响应
 
