@@ -1,5 +1,22 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import DOMPurify from "dompurify";
+import hljs from "highlight.js/lib/core";
+import bash from "highlight.js/lib/languages/bash";
+import css from "highlight.js/lib/languages/css";
+import diff from "highlight.js/lib/languages/diff";
+import dockerfile from "highlight.js/lib/languages/dockerfile";
+import go from "highlight.js/lib/languages/go";
+import javascript from "highlight.js/lib/languages/javascript";
+import json from "highlight.js/lib/languages/json";
+import markdown from "highlight.js/lib/languages/markdown";
+import powershell from "highlight.js/lib/languages/powershell";
+import python from "highlight.js/lib/languages/python";
+import sql from "highlight.js/lib/languages/sql";
+import typescript from "highlight.js/lib/languages/typescript";
+import xml from "highlight.js/lib/languages/xml";
+import yaml from "highlight.js/lib/languages/yaml";
+import MarkdownIt from "markdown-it";
 import {
   ArrowLeft,
   ArrowDown,
@@ -98,6 +115,32 @@ import {
   type TokenUsage
 } from "./api";
 import { P2PRemoteError, P2PTransport } from "./p2p";
+
+for (const [name, language] of Object.entries({ bash, css, diff, dockerfile, go, javascript, json, markdown, powershell, python, sql, typescript, xml, yaml })) {
+  hljs.registerLanguage(name, language);
+}
+
+const markdownRenderer = new MarkdownIt({
+  breaks: true,
+  html: false,
+  linkify: true,
+  highlight(code, info) {
+    const language = info.trim().split(/\s+/)[0]?.toLowerCase() || "";
+    const highlighted = language && hljs.getLanguage(language)
+      ? hljs.highlight(code, { language, ignoreIllegals: true }).value
+      : escapeHtml(code);
+    const languageClass = language ? ` language-${escapeAttr(language)}` : "";
+    return `<pre class="code-block"><code class="hljs${languageClass}">${highlighted}</code></pre>`;
+  }
+});
+
+const defaultLinkOpen = markdownRenderer.renderer.rules.link_open
+  ?? ((tokens, index, options, _environment, renderer) => renderer.renderToken(tokens, index, options));
+markdownRenderer.renderer.rules.link_open = (tokens, index, options, environment, renderer) => {
+  tokens[index].attrSet("target", "_blank");
+  tokens[index].attrSet("rel", "noopener noreferrer");
+  return defaultLinkOpen(tokens, index, options, environment, renderer);
+};
 
 const auth = ref<AuthStatus>({ authenticated: false, registrationOpen: true });
 const authChecked = ref(false);
@@ -1769,109 +1812,9 @@ function eventHtml(event: RemoteEvent) {
 }
 
 function markdownToHtml(markdown: string) {
-  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
-  const html: string[] = [];
-  let index = 0;
-
-  while (index < lines.length) {
-    const line = lines[index];
-    if (!line.trim()) {
-      index += 1;
-      continue;
-    }
-
-    const fence = line.match(/^```([\w-]+)?\s*$/);
-    if (fence) {
-      const language = fence[1] ? ` language-${escapeAttr(fence[1])}` : "";
-      const code: string[] = [];
-      index += 1;
-      while (index < lines.length && !/^```\s*$/.test(lines[index])) {
-        code.push(lines[index]);
-        index += 1;
-      }
-      if (index < lines.length) index += 1;
-      html.push(`<pre class="code-block"><code class="${language.trim()}">${escapeHtml(code.join("\n"))}</code></pre>`);
-      continue;
-    }
-
-    const heading = line.match(/^(#{1,6})\s+(.+)$/);
-    if (heading) {
-      const level = heading[1].length;
-      html.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
-      index += 1;
-      continue;
-    }
-
-    if (/^>\s?/.test(line)) {
-      const quote: string[] = [];
-      while (index < lines.length && /^>\s?/.test(lines[index])) {
-        quote.push(lines[index].replace(/^>\s?/, ""));
-        index += 1;
-      }
-      html.push(`<blockquote>${markdownToHtml(quote.join("\n"))}</blockquote>`);
-      continue;
-    }
-
-    if (/^[-*+]\s+/.test(line)) {
-      const items: string[] = [];
-      while (index < lines.length && /^[-*+]\s+/.test(lines[index])) {
-        items.push(`<li>${inlineMarkdown(lines[index].replace(/^[-*+]\s+/, ""))}</li>`);
-        index += 1;
-      }
-      html.push(`<ul>${items.join("")}</ul>`);
-      continue;
-    }
-
-    if (/^\d+\.\s+/.test(line)) {
-      const items: string[] = [];
-      while (index < lines.length && /^\d+\.\s+/.test(lines[index])) {
-        items.push(`<li>${inlineMarkdown(lines[index].replace(/^\d+\.\s+/, ""))}</li>`);
-        index += 1;
-      }
-      html.push(`<ol>${items.join("")}</ol>`);
-      continue;
-    }
-
-    const paragraph: string[] = [];
-    while (
-      index < lines.length &&
-      lines[index].trim() &&
-      !/^```/.test(lines[index]) &&
-      !/^(#{1,6})\s+/.test(lines[index]) &&
-      !/^>\s?/.test(lines[index]) &&
-      !/^[-*+]\s+/.test(lines[index]) &&
-      !/^\d+\.\s+/.test(lines[index])
-    ) {
-      paragraph.push(lines[index]);
-      index += 1;
-    }
-    html.push(`<p>${inlineMarkdown(paragraph.join("\n")).replace(/\n/g, "<br>")}</p>`);
-  }
-
-  return html.join("");
-}
-
-function inlineMarkdown(value: string) {
-  const placeholders: string[] = [];
-  let html = escapeHtml(value).replace(/`([^`]+)`/g, (_, code: string) => {
-    const token = `\u0000${placeholders.length}\u0000`;
-    placeholders.push(`<code>${code}</code>`);
-    return token;
+  return DOMPurify.sanitize(markdownRenderer.render(markdown), {
+    USE_PROFILES: { html: true }
   });
-
-  html = html.replace(/\[([^\]]+)]\(([^)\s]+)\)/g, (match, label: string, href: string) => {
-    const decodedHref = href.replace(/&amp;/g, "&");
-    if (!isSafeUrl(decodedHref)) return match;
-    return `<a href="${escapeAttr(decodedHref)}" target="_blank" rel="noreferrer">${label}</a>`;
-  });
-  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  html = html.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
-
-  return placeholders.reduce((result, replacement, index) => result.replace(`\u0000${index}\u0000`, replacement), html);
-}
-
-function isSafeUrl(url: string) {
-  return /^(https?:\/\/|mailto:|\/|#)/i.test(url);
 }
 
 function escapeHtml(value: string) {
