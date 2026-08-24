@@ -2182,32 +2182,32 @@ function transportLabel(status: typeof transportState.value) {
               <div class="field-label">
                 <span class="field-label-heading"><label for="port-mapping-name">映射名称</label><button class="field-help" type="button" aria-label="查看映射名称说明" :aria-expanded="portMappingHelp === 'name'" aria-controls="port-mapping-help-name" @click="togglePortMappingHelp('name')"><CircleHelp :size="14" /></button></span>
                 <input id="port-mapping-name" v-model="portMappingForm.name" type="text" maxlength="120" placeholder="例如：远程调试" />
-                <small v-if="portMappingHelp === 'name'" id="port-mapping-help-name" class="field-tip">仅用于识别这条映射，例如“办公室 NAS”或“远程调试”。</small>
+                <small v-if="portMappingHelp === 'name'" id="port-mapping-help-name" class="field-tip" role="tooltip">仅用于识别这条映射，例如“办公室 NAS”或“远程调试”。</small>
               </div>
               <div class="field-label">
                 <span class="field-label-heading"><label for="port-mapping-device">目标设备</label><button class="field-help" type="button" aria-label="查看目标设备说明" :aria-expanded="portMappingHelp === 'device'" aria-controls="port-mapping-help-device" @click="togglePortMappingHelp('device')"><CircleHelp :size="14" /></button></span>
                 <select id="port-mapping-device" v-model="portMappingForm.deviceId"><option value="" disabled>选择你的设备</option><option v-for="device in devices" :key="device.id" :value="device.id">{{ device.name }}{{ device.online ? '（在线）' : '（离线）' }}</option></select>
-                <small v-if="portMappingHelp === 'device'" id="port-mapping-help-device" class="field-tip">选择运行 Codex Link 客户端的设备。它负责从所在网络连接目标主机。</small>
+                <small v-if="portMappingHelp === 'device'" id="port-mapping-help-device" class="field-tip" role="tooltip">选择运行 Codex Link 客户端的设备。它负责从所在网络连接目标主机。</small>
               </div>
               <div class="field-label">
                 <span class="field-label-heading"><label for="port-mapping-target-host">目标主机地址</label><button class="field-help" type="button" aria-label="查看目标主机地址说明" :aria-expanded="portMappingHelp === 'targetHost'" aria-controls="port-mapping-help-target-host" @click="togglePortMappingHelp('targetHost')"><CircleHelp :size="14" /></button></span>
                 <input id="port-mapping-target-host" v-model="portMappingForm.targetHost" type="text" maxlength="255" placeholder="例如：192.168.1.20 或 127.0.0.1" />
-                <small v-if="portMappingHelp === 'targetHost'" id="port-mapping-help-target-host" class="field-tip">可填设备本机的 <code>127.0.0.1</code>，也可填设备能访问的局域网 IP 或主机名，例如 <code>192.168.1.20</code>、<code>nas.local</code>。</small>
+                <small v-if="portMappingHelp === 'targetHost'" id="port-mapping-help-target-host" class="field-tip" role="tooltip">可填设备本机的 <code>127.0.0.1</code>，也可填设备能访问的局域网 IP 或主机名，例如 <code>192.168.1.20</code>、<code>nas.local</code>。</small>
               </div>
               <div class="field-label">
                 <span class="field-label-heading"><label for="port-mapping-target-port">目标主机端口</label><button class="field-help" type="button" aria-label="查看目标主机端口说明" :aria-expanded="portMappingHelp === 'targetPort'" aria-controls="port-mapping-help-target-port" @click="togglePortMappingHelp('targetPort')"><CircleHelp :size="14" /></button></span>
                 <input id="port-mapping-target-port" v-model.number="portMappingForm.targetPort" type="number" min="1" max="65535" />
-                <small v-if="portMappingHelp === 'targetPort'" id="port-mapping-help-target-port" class="field-tip">目标主机上实际提供服务的 TCP 端口，例如 NAS 管理端口、数据库端口或开发调试端口。</small>
+                <small v-if="portMappingHelp === 'targetPort'" id="port-mapping-help-target-port" class="field-tip" role="tooltip">目标主机上实际提供服务的 TCP 端口，例如 NAS 管理端口、数据库端口或开发调试端口。</small>
               </div>
               <div class="field-label">
                 <span class="field-label-heading"><label for="port-mapping-listen-port">服务端公开端口</label><button class="field-help" type="button" aria-label="查看服务端公开端口说明" :aria-expanded="portMappingHelp === 'listenPort'" aria-controls="port-mapping-help-listen-port" @click="togglePortMappingHelp('listenPort')"><CircleHelp :size="14" /></button></span>
                 <input id="port-mapping-listen-port" v-model.number="portMappingForm.listenPort" type="number" min="1" max="65535" />
-                <small v-if="portMappingHelp === 'listenPort'" id="port-mapping-help-listen-port" class="field-tip">外部访问使用的 TCP 端口。需先在 Docker Compose 映射该端口，并在公网防火墙放行；不能使用网页服务端口。</small>
+                <small v-if="portMappingHelp === 'listenPort'" id="port-mapping-help-listen-port" class="field-tip" role="tooltip">外部访问使用的 TCP 端口。需先在 Docker Compose 映射该端口，并在公网防火墙放行；不能使用网页服务端口。</small>
               </div>
               <div class="port-enabled">
                 <label for="port-mapping-enabled"><input id="port-mapping-enabled" v-model="portMappingForm.enabled" type="checkbox" /><span>启用监听</span></label>
                 <button class="field-help" type="button" aria-label="查看启用监听说明" :aria-expanded="portMappingHelp === 'enabled'" aria-controls="port-mapping-help-enabled" @click="togglePortMappingHelp('enabled')"><CircleHelp :size="14" /></button>
-                <small v-if="portMappingHelp === 'enabled'" id="port-mapping-help-enabled" class="field-tip">关闭后服务端立即停止监听公开端口；保存映射配置但不会接受外部连接。</small>
+                <small v-if="portMappingHelp === 'enabled'" id="port-mapping-help-enabled" class="field-tip" role="tooltip">关闭后服务端立即停止监听公开端口；保存映射配置但不会接受外部连接。</small>
               </div>
             </div>
             <div class="port-form-actions">
