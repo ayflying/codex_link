@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,28 @@ import (
 	"testing"
 	"time"
 )
+
+type recordingWriteCloser struct {
+	bytes.Buffer
+}
+
+func (recordingWriteCloser) Close() error { return nil }
+
+func TestSendNotificationUsesJSONRPCNotificationShape(t *testing.T) {
+	writer := &recordingWriteCloser{}
+	bridge := &Bridge{stdin: writer}
+	if err := bridge.sendNotificationLocked("initialized", map[string]interface{}{}); err != nil {
+		t.Fatalf("send initialized notification: %v", err)
+	}
+
+	var message rpcMessage
+	if err := json.Unmarshal(bytes.TrimSpace(writer.Bytes()), &message); err != nil {
+		t.Fatalf("decode notification: %v", err)
+	}
+	if message.JSONRPC != "2.0" || message.Method != "initialized" || message.ID != nil {
+		t.Fatalf("unexpected notification envelope: %#v", message)
+	}
+}
 
 func TestDefaultRemoteAgentDataDirUsesLocalAppData(t *testing.T) {
 	localAppData := t.TempDir()

@@ -282,6 +282,8 @@ type pendingCall struct {
 	result chan rpcMessage
 }
 
+const maxCodexRPCLineBytes = 64 * 1024 * 1024
+
 type Bridge struct {
 	mu              sync.Mutex
 	rpcMu           sync.Mutex
@@ -347,13 +349,15 @@ func (b *Bridge) ensureReady() error {
 	if err := b.startProcess(); err != nil {
 		return err
 	}
+	b.rpcMu.Lock()
+	defer b.rpcMu.Unlock()
 	b.mu.Lock()
 	initialized := b.initialized
 	b.mu.Unlock()
 	if initialized {
 		return nil
 	}
-	_, err := b.request("initialize", map[string]interface{}{
+	_, err := b.requestLocked("initialize", map[string]interface{}{
 		"clientInfo": map[string]interface{}{
 			"name":    "codex-mobile-remote-go",
 			"title":   "Codex Mobile Remote Go",
@@ -365,6 +369,9 @@ func (b *Bridge) ensureReady() error {
 		},
 	})
 	if err != nil {
+		return err
+	}
+	if err := b.sendNotificationLocked("initialized", map[string]interface{}{}); err != nil {
 		return err
 	}
 	b.mu.Lock()
@@ -422,9 +429,25 @@ func (b *Bridge) startProcess() error {
 
 func (b *Bridge) readStdout(reader io.Reader) {
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxCodexRPCLineBytes)
 	for scanner.Scan() {
 		b.handleLine(scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		b.failPending(fmt.Errorf("读取 Codex app-server 响应失败: %w", err))
+	}
+}
+
+func (b *Bridge) failPending(err error) {
+	b.mu.Lock()
+	pending := b.pending
+	b.pending = map[int64]pendingCall{}
+	b.mu.Unlock()
+	for _, call := range pending {
+		select {
+		case call.result <- rpcMessage{Error: err.Error()}:
+		default:
+		}
 	}
 }
 
@@ -441,6 +464,10 @@ func (b *Bridge) readStderr(reader io.Reader) {
 func (b *Bridge) request(method string, params interface{}) (interface{}, error) {
 	b.rpcMu.Lock()
 	defer b.rpcMu.Unlock()
+	return b.requestLocked(method, params)
+}
+
+func (b *Bridge) requestLocked(method string, params interface{}) (interface{}, error) {
 	b.mu.Lock()
 	b.nextRPCID++
 	id := b.nextRPCID
@@ -470,6 +497,18 @@ func (b *Bridge) request(method string, params interface{}) (interface{}, error)
 		b.mu.Unlock()
 		return nil, fmt.Errorf("timed out waiting for %s", method)
 	}
+}
+
+func (b *Bridge) sendNotificationLocked(method string, params interface{}) error {
+	b.mu.Lock()
+	stdin := b.stdin
+	b.mu.Unlock()
+	if stdin == nil {
+		return errors.New("codex app-server process is not running")
+	}
+	raw, _ := json.Marshal(rpcMessage{JSONRPC: "2.0", Method: method, Params: params})
+	_, err := stdin.Write(append(raw, '\n'))
+	return err
 }
 
 func (b *Bridge) writeResult(id int64, result interface{}) error {
