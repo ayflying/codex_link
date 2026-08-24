@@ -745,19 +745,19 @@ button:disabled { cursor: not-allowed; opacity: 0.5; transform: none !important;
 .composer-actions .composer-plus { width: 32px; min-width: 32px; height: 32px; border-radius: 50%; background: transparent; color: var(--muted); }
 .composer-actions .composer-plus:hover:not(:disabled) { background: var(--line); color: var(--ink); }
 .composer-permission { min-width: 0; height: 32px; display: inline-flex; align-items: center; gap: 5px; border: 0; background: transparent; color: var(--amber); }
-.composer-permission select, .composer-select select { min-width: 0; border: 0; outline: 0; background: transparent; font-size: 12px; font-weight: 700; }
+.composer-permission select { min-width: 0; border: 0; outline: 0; background: transparent; font-size: 12px; font-weight: 700; }
 .composer-permission select { color: var(--amber); }
 .composer-mode { min-width: 0; height: 32px; display: inline-flex; align-items: center; gap: 5px; border: 0; background: transparent; color: var(--aqua-dark); }
 .composer-mode select { min-width: 0; border: 0; outline: 0; background: transparent; color: var(--aqua-dark); font-size: 12px; font-weight: 700; cursor: pointer; }
 .composer-mode select:disabled { cursor: not-allowed; opacity: .48; }
-.composer-permission option, .composer-select option { color: var(--ink-soft); background: var(--surface); }
+.composer-permission option, .composer-model-menu option { color: var(--ink-soft); background: var(--surface); }
 .composer-controls { justify-content: flex-end; }
-.composer-select { min-width: 0; height: 32px; display: inline-flex; align-items: center; gap: 5px; padding: 0 5px; border-radius: 6px; color: var(--muted); }
-.composer-select:hover:has(select:not(:disabled)) { background: var(--line); color: var(--ink); }
-.composer-select select { overflow: hidden; color: var(--ink-soft); text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
-.composer-select select:disabled { cursor: not-allowed; opacity: .48; }
-.composer-model-select select { max-width: 172px; }
-.composer-reasoning-select select { max-width: 74px; }
+.composer-model-trigger { min-width: 0; max-width: min(240px, 34vw); height: 32px; display: inline-flex; align-items: center; gap: 6px; padding: 0 7px; border: 0; border-radius: 6px; background: transparent; color: var(--ink-soft); cursor: pointer; }
+.composer-model-trigger:hover:not(:disabled), .composer-model-trigger[aria-expanded="true"] { background: var(--line); color: var(--ink); }
+.composer-model-trigger:disabled { cursor: not-allowed; opacity: .48; }
+.composer-model-trigger > span { min-width: 0; overflow: hidden; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.composer-model-trigger > svg:last-child { flex: 0 0 auto; transition: transform 140ms ease; }
+.composer-model-trigger > svg:last-child.open { transform: rotate(180deg); }
 .composer-send { width: 34px; min-width: 34px; height: 34px; display: inline-grid; place-items: center; padding: 0; border-radius: 50%; background: var(--ink); color: var(--surface); box-shadow: none; }
 .composer-send:hover:not(:disabled) { background: var(--aqua); color: #ffffff; box-shadow: none; }
 .composer-send:disabled { background: var(--line); color: var(--muted); opacity: 1; }
@@ -780,7 +780,14 @@ button:disabled { cursor: not-allowed; opacity: 0.5; transform: none !important;
 .queue-direction { min-height: 28px; padding: 0 7px; border-radius: 5px; background: transparent; color: var(--aqua-dark); cursor: pointer; }
 .queue-direction:hover:not(:disabled) { background: var(--aqua-pale); }
 .queue-direction:disabled { cursor: wait; opacity: .45; }
-.composer-menu, .goal-editor { position: absolute; z-index: 7; left: 9px; bottom: 58px; width: min(360px, calc(100% - 18px)); padding: 8px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); box-shadow: 0 18px 42px rgba(15, 31, 47, .2); }
+.composer-menu, .composer-model-menu, .goal-editor { position: absolute; z-index: 7; bottom: 58px; width: min(360px, calc(100% - 18px)); padding: 8px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); box-shadow: 0 18px 42px rgba(15, 31, 47, .2); }
+.composer-menu, .goal-editor { left: 9px; }
+.composer-model-menu { right: 9px; display: grid; gap: 9px; width: min(304px, calc(100% - 18px)); }
+.composer-model-menu-field { display: grid; gap: 5px; padding: 5px; border-radius: 5px; color: var(--muted); font-size: 11px; font-weight: 700; }
+.composer-model-menu-field:focus-within { background: var(--surface-soft); color: var(--aqua-dark); }
+.composer-model-menu-field select { width: 100%; min-width: 0; height: 32px; padding: 0 7px; border: 1px solid var(--line); border-radius: 5px; outline: 0; background: var(--surface); color: var(--ink-soft); font-size: 12px; font-weight: 700; cursor: pointer; }
+.composer-model-menu-field select:focus { border-color: var(--aqua); box-shadow: 0 0 0 2px var(--aqua-pale); }
+.composer-model-menu-field select:disabled { cursor: not-allowed; opacity: .48; }
 .composer-menu-label { padding: 4px 8px 7px; color: var(--muted); font-size: 11px; font-weight: 750; }
 .composer-menu-item { min-width: 0; width: 100%; min-height: 36px; display: flex; align-items: center; gap: 9px; padding: 0 8px; border-radius: 5px; background: transparent; color: var(--ink-soft); text-align: left; cursor: pointer; }
 .composer-menu-item:hover, .composer-menu-item.active { background: var(--surface-soft); color: var(--aqua-dark); }
@@ -880,7 +887,7 @@ button:disabled { cursor: not-allowed; opacity: 0.5; transform: none !important;
   .queue-item { grid-template-columns: minmax(0, 1fr); }
   .queue-item-actions { justify-content: flex-start; }
   .queue-direction { margin-right: auto; }
-  .composer-menu, .goal-editor { bottom: 60px; }
+  .composer-menu, .composer-model-menu, .goal-editor { bottom: 60px; }
   .auth-shell { display: block; padding: 12px; }
   .auth-intro { min-height: auto; gap: 60px; margin-bottom: 12px; padding: 24px 22px; }
   .auth-intro::after { right: -100px; bottom: -80px; width: 220px; height: 220px; }
@@ -899,7 +906,7 @@ button:disabled { cursor: not-allowed; opacity: 0.5; transform: none !important;
   .user-menu-trigger { min-width: 42px; padding-inline: 10px; }
   .user-menu-trigger > span { display: none; }
   .user-menu-trigger > svg:last-child { display: none; }
-  .composer-model-select select { max-width: 132px; }
+  .composer-model-trigger { max-width: min(190px, 48vw); }
   .context-usage { max-width: 180px; }
 }
 

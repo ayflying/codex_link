@@ -186,6 +186,7 @@ const threadGoal = ref<ThreadGoal | null>(null);
 const goalEditorOpen = ref(false);
 const goalDraft = ref("");
 const composerMenuOpen = ref(false);
+const modelMenuOpen = ref(false);
 const composerBusy = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
 const defaultAppSettings: AppSettings = { approvalMode: "on-request", workMode: "edit", model: "", reasoningEffort: "" };
@@ -255,6 +256,10 @@ const selectedModelOption = computed(() => {
   return models.value.find((model) => model.model === selectedModel)
     ?? models.value.find((model) => model.isDefault)
     ?? models.value[0];
+});
+const selectedModelLabel = computed(() => {
+  const model = selectedModelOption.value;
+  return model?.displayName || model?.model || "默认模型";
 });
 const supportedReasoningEfforts = computed(() => selectedModelOption.value?.supportedReasoningEfforts || []);
 const groupedSessions = computed(() => {
@@ -359,6 +364,7 @@ watch(activeSessionId, (sessionId) => {
 	queuedSubmissions.value = [];
 	threadGoal.value = null;
 	composerMenuOpen.value = false;
+	modelMenuOpen.value = false;
 	goalEditorOpen.value = false;
 	if (sessionId && !activeSessionReadOnly.value) {
 		void loadQueue(sessionId);
@@ -1299,6 +1305,15 @@ function selectReasoningEffort(event: Event) {
   void saveSettings({ reasoningEffort: (event.target as HTMLSelectElement).value as AppSettings["reasoningEffort"] });
 }
 
+function toggleModelMenu() {
+  if (!canModifyActiveSession.value) return;
+  modelMenuOpen.value = !modelMenuOpen.value;
+  if (modelMenuOpen.value) {
+    composerMenuOpen.value = false;
+    goalEditorOpen.value = false;
+  }
+}
+
 function selectWorkMode(event: Event) {
   void saveSettings({ workMode: (event.target as HTMLSelectElement).value as AppSettings["workMode"] });
 }
@@ -1317,6 +1332,7 @@ function reasoningEffortLabel(effort: AppSettings["reasoningEffort"]) {
 function openFilePicker() {
 	if (!canModifyActiveSession.value) return;
   composerMenuOpen.value = false;
+  modelMenuOpen.value = false;
   fileInput.value?.click();
 }
 
@@ -1325,6 +1341,7 @@ function openGoalEditor() {
   goalDraft.value = threadGoal.value?.objective || "";
   goalEditorOpen.value = true;
   composerMenuOpen.value = false;
+  modelMenuOpen.value = false;
 }
 
 async function addFiles(files: File[]) {
@@ -2668,29 +2685,24 @@ function transportLabel(status: typeof transportState.value) {
             />
             <div class="composer-toolbar">
               <div class="composer-actions">
-                <button class="icon-button composer-plus" type="button" title="添加文件或目标" :disabled="!canModifyActiveSession" @click="composerMenuOpen = !composerMenuOpen"><Plus :size="19" /></button>
+                <button class="icon-button composer-plus" type="button" title="添加文件或目标" :disabled="!canModifyActiveSession" @click="composerMenuOpen = !composerMenuOpen; modelMenuOpen = false"><Plus :size="19" /></button>
                 <label class="composer-permission"><ShieldCheck :size="15" /><select v-model="settings.approvalMode" aria-label="权限模式" @change="saveSettings({ approvalMode: settings.approvalMode })"><option value="on-request">请求批准</option><option value="on-failure">按需批准</option><option value="never">完全访问</option></select></label>
                 <label class="composer-mode" title="工作模式"><Clock3 :size="15" /><select :value="settings.workMode" aria-label="工作模式" :disabled="!canModifyActiveSession" @change="selectWorkMode"><option value="edit">编辑</option><option value="plan">计划</option></select></label>
               </div>
               <div class="composer-controls">
-                <label class="composer-select composer-model-select" title="选择模型">
+                <button
+                  class="composer-model-trigger"
+                  type="button"
+                  :title="`模型与推理强度：${selectedModelLabel}`"
+                  aria-haspopup="dialog"
+                  :aria-expanded="modelMenuOpen"
+                  :disabled="!models.length || !canModifyActiveSession"
+                  @click="toggleModelMenu"
+                >
                   <Cpu :size="15" />
-                  <select :value="settings.model" aria-label="模型" :disabled="!models.length || !canModifyActiveSession" @change="selectModel">
-                    <option value="">默认模型</option>
-                    <option v-for="model in models" :key="model.id" :value="model.model" :title="model.description">
-                      {{ model.displayName || model.model }}
-                    </option>
-                  </select>
-                </label>
-                <label class="composer-select composer-reasoning-select" title="推理强度">
-                  <Gauge :size="15" />
-                  <select :value="settings.reasoningEffort" aria-label="推理强度" :disabled="!supportedReasoningEfforts.length || !canModifyActiveSession" @change="selectReasoningEffort">
-                    <option value="">默认推理</option>
-                    <option v-for="effort in supportedReasoningEfforts" :key="effort.reasoningEffort" :value="effort.reasoningEffort" :title="effort.description">
-                      {{ reasoningEffortLabel(effort.reasoningEffort) }}
-                    </option>
-                  </select>
-                </label>
+                  <span>{{ selectedModelLabel }}</span>
+                  <ChevronDown :size="14" :class="{ open: modelMenuOpen }" />
+                </button>
                 <button class="primary send composer-send" :class="{ stop: showStopButton }" type="button" :title="showStopButton ? '停止' : activeSessionRunning ? '加入队列' : '发送'" :disabled="!canModifyActiveSession || (!showStopButton && !composerHasInput) || composerBusy" @click="showStopButton ? cancel() : submitMessage()">
                   <CircleStop v-if="showStopButton" :size="18" />
                   <Send v-else :size="18" />
@@ -2702,6 +2714,26 @@ function transportLabel(status: typeof transportState.value) {
             <div class="composer-menu-label">添加</div>
             <button type="button" class="composer-menu-item" @click="openFilePicker"><Paperclip :size="16" /><span>文件和文件夹</span></button>
             <button type="button" class="composer-menu-item" :class="{ active: threadGoal }" @click="openGoalEditor"><Target :size="16" /><span>目标</span><small>{{ threadGoal ? "已设置" : "设置要持续追踪的目标" }}</small></button>
+          </div>
+          <div v-if="modelMenuOpen && !activeSessionReadOnly" class="composer-model-menu" @keydown.esc="modelMenuOpen = false">
+            <label class="composer-model-menu-field">
+              <span>选择模型</span>
+              <select :value="settings.model" aria-label="选择模型" :disabled="!models.length || !canModifyActiveSession" @change="selectModel">
+                <option value="">默认模型</option>
+                <option v-for="model in models" :key="model.id" :value="model.model" :title="model.description">
+                  {{ model.displayName || model.model }}
+                </option>
+              </select>
+            </label>
+            <label class="composer-model-menu-field">
+              <span>推理强度</span>
+              <select :value="settings.reasoningEffort" aria-label="推理强度" :disabled="!supportedReasoningEfforts.length || !canModifyActiveSession" @change="selectReasoningEffort">
+                <option value="">默认推理</option>
+                <option v-for="effort in supportedReasoningEfforts" :key="effort.reasoningEffort" :value="effort.reasoningEffort" :title="effort.description">
+                  {{ reasoningEffortLabel(effort.reasoningEffort) }}
+                </option>
+              </select>
+            </label>
           </div>
           <div v-if="goalEditorOpen && !activeSessionReadOnly" class="goal-editor">
             <div class="goal-editor-heading"><Target :size="16" /><strong>目标</strong><button type="button" class="queue-icon" title="关闭" @click="goalEditorOpen = false"><X :size="15" /></button></div>
