@@ -50,6 +50,8 @@ type remoteAgent struct {
 
 const remoteHTTPTimeout = 15 * time.Second
 
+const remoteWriteTimeout = 10 * time.Second
+
 var remoteHTTPClient = &http.Client{Timeout: remoteHTTPTimeout}
 
 func isRemoteAgentMode() bool {
@@ -564,11 +566,18 @@ func (a *remoteAgent) send(kind, requestID, action string, payload interface{}, 
 		}
 	}
 	a.write.Lock()
-	defer a.write.Unlock()
-	if a.conn == nil {
+	connection := a.conn
+	if connection == nil {
+		a.write.Unlock()
 		return
 	}
-	_ = a.conn.WriteJSON(message)
+	_ = connection.SetWriteDeadline(time.Now().Add(remoteWriteTimeout))
+	err := connection.WriteJSON(message)
+	_ = connection.SetWriteDeadline(time.Time{})
+	a.write.Unlock()
+	if err != nil {
+		_ = connection.Close()
+	}
 }
 
 func remoteWebSocketURL(config remoteAgentConfig) (string, error) {
