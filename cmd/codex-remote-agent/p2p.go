@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	p2pMaxUploadBytes = 10 * 1024 * 1024
+	p2pMaxUploadBytes = 16 * 1024 * 1024
 	p2pChunkBytes     = 48 * 1024
 )
 
@@ -221,8 +221,8 @@ func (a *remoteAgent) handleP2PUpload(peer *p2pPeer, action string, raw json.Raw
 		if err := json.Unmarshal(raw, &body); err != nil || body.UploadID == "" {
 			return nil, errors.New("上传参数无效")
 		}
-		if !strings.HasPrefix(body.MimeType, "image/") || body.Size <= 0 || body.Size > p2pMaxUploadBytes {
-			return nil, errors.New("图片附件无效或超过 10MB")
+		if body.Size <= 0 || body.Size > p2pMaxUploadBytes {
+			return nil, errors.New("文件无效或超过 16MB")
 		}
 		if !isSafeP2PID(body.UploadID) {
 			return nil, errors.New("上传标识无效")
@@ -231,6 +231,12 @@ func (a *remoteAgent) handleP2PUpload(peer *p2pPeer, action string, raw json.Raw
 			return nil, err
 		}
 		ext := extensionForMime(body.MimeType)
+		if ext == "" {
+			ext = strings.ToLower(filepath.Ext(body.Name))
+		}
+		if ext == "" {
+			ext = ".bin"
+		}
 		path := filepath.Join(a.store.dataDir, "uploads", randomID()+ext)
 		file, err := os.Create(path)
 		if err != nil {

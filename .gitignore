@@ -13,4 +13,5 @@ data-local/
 *.exe
 tmp-*
 release/**/codex-relay-server-linux-amd64
+release/codex-app-schema-inspect/
 *.tsbuildinfo

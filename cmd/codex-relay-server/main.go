@@ -29,7 +29,7 @@ const (
 	authCookieName            = "codex_relay_session"
 	passwordIterations        = 120000
 	defaultEventBacklog       = 6
-	maxImageBytes             = 10 * 1024 * 1024
+	maxAttachmentBytes        = 16 * 1024 * 1024
 	defaultRequestTimeoutSecs = 35
 )
 
@@ -522,18 +522,15 @@ func (s *relayStore) unsubscribe(userID string, channel chan Event) {
 }
 
 func (s *relayStore) saveUpload(userID string, attachment Attachment, dataURL string) (Attachment, error) {
-	if !strings.HasPrefix(strings.ToLower(attachment.MimeType), "image/") {
-		return Attachment{}, errors.New("只支持图片附件")
-	}
-	if size := decodedDataURLSize(dataURL); size <= 0 || size > maxImageBytes {
-		return Attachment{}, errors.New("图片数据无效或超过 10MB")
+	if size := decodedDataURLSize(dataURL); size <= 0 || size > maxAttachmentBytes {
+		return Attachment{}, errors.New("文件数据无效或超过 16MB")
 	}
 	attachment.ID = randomID()
 	attachment.Path = ""
 	attachment.DataURL = ""
 	attachment.URL = "/api/uploads/" + attachment.ID
 	if attachment.Name == "" {
-		attachment.Name = "image.png"
+		attachment.Name = "attachment.bin"
 	}
 	s.mu.Lock()
 	s.uploads[attachment.ID] = storedUpload{UserID: userID, Attachment: attachment, DataURL: dataURL}
@@ -553,11 +550,11 @@ func (s *relayStore) resolveAttachments(userID string, attachments []Attachment)
 	resolved := make([]Attachment, 0, len(attachments))
 	for _, attachment := range attachments {
 		if attachment.ID == "" {
-			return nil, errors.New("图片附件缺少 ID")
+			return nil, errors.New("附件缺少 ID")
 		}
 		upload, ok := s.upload(userID, attachment.ID)
 		if !ok {
-			return nil, errors.New("图片附件不存在或不属于当前用户")
+			return nil, errors.New("附件不存在或不属于当前用户")
 		}
 		item := upload.Attachment
 		item.DataURL = upload.DataURL
@@ -1345,17 +1342,17 @@ func (s *relayServer) uploadFile(w http.ResponseWriter, request *http.Request) {
 	id := filepath.Base(strings.TrimPrefix(request.URL.Path, "/api/uploads/"))
 	upload, ok := s.store.upload(user.ID, id)
 	if !ok {
-		writeErrorStatus(w, http.StatusNotFound, "图片不存在")
+		writeErrorStatus(w, http.StatusNotFound, "文件不存在")
 		return
 	}
 	comma := strings.Index(upload.DataURL, ",")
 	if comma < 0 {
-		writeErrorStatus(w, http.StatusInternalServerError, "图片数据损坏")
+		writeErrorStatus(w, http.StatusInternalServerError, "文件数据损坏")
 		return
 	}
 	raw, err := base64.StdEncoding.DecodeString(upload.DataURL[comma+1:])
 	if err != nil {
-		writeErrorStatus(w, http.StatusInternalServerError, "图片数据损坏")
+		writeErrorStatus(w, http.StatusInternalServerError, "文件数据损坏")
 		return
 	}
 	w.Header().Set("content-type", upload.Attachment.MimeType)
@@ -1525,6 +1522,34 @@ func (s *relayServer) sessionAction(w http.ResponseWriter, request *http.Request
 		writeRawJSON(w, result)
 		return
 	}
+	if action == "queue" && request.Method == http.MethodGet {
+		deviceID, err := s.resolveDevice(user.ID, request, sessionID)
+		if err != nil {
+			writeErrorStatus(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		result, err := s.command(user.ID, deviceID, "queue.list", map[string]string{"id": sessionID})
+		if err != nil {
+			writeErrorStatus(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeRawJSON(w, result)
+		return
+	}
+	if action == "goal" && request.Method == http.MethodGet {
+		deviceID, err := s.resolveDevice(user.ID, request, sessionID)
+		if err != nil {
+			writeErrorStatus(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		result, err := s.command(user.ID, deviceID, "goal.get", map[string]string{"id": sessionID})
+		if err != nil {
+			writeErrorStatus(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeRawJSON(w, result)
+		return
+	}
 	if request.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
@@ -1584,6 +1609,77 @@ func (s *relayServer) sessionAction(w http.ResponseWriter, request *http.Request
 			return
 		}
 		writeJSON(w, map[string]bool{"ok": true})
+	case "queue":
+		var body struct {
+			Operation     string                   `json:"operation"`
+			Text          string                   `json:"text"`
+			Attachments   []Attachment             `json:"attachments"`
+			SubmissionID  string                   `json:"submissionId"`
+			SubmissionIDs []string                 `json:"submissionIds"`
+			Input         []map[string]interface{} `json:"input"`
+		}
+		if err := decodeJSON(request, &body); err != nil {
+			writeErrorStatus(w, http.StatusBadRequest, "请求格式不正确")
+			return
+		}
+		var command string
+		var payload interface{}
+		switch body.Operation {
+		case "add":
+			if strings.TrimSpace(body.Text) == "" && len(body.Attachments) == 0 {
+				writeErrorStatus(w, http.StatusBadRequest, "消息不能为空")
+				return
+			}
+			attachments, resolveErr := s.store.resolveAttachments(user.ID, body.Attachments)
+			if resolveErr != nil {
+				writeErrorStatus(w, http.StatusBadRequest, resolveErr.Error())
+				return
+			}
+			command = "queue.add"
+			payload = map[string]interface{}{"id": sessionID, "text": body.Text, "attachments": attachments}
+		case "update":
+			command = "queue.update"
+			payload = map[string]interface{}{"id": sessionID, "submissionId": body.SubmissionID, "input": body.Input}
+		case "delete":
+			command = "queue.delete"
+			payload = map[string]string{"id": sessionID, "submissionId": body.SubmissionID}
+		case "reorder":
+			command = "queue.reorder"
+			payload = map[string]interface{}{"id": sessionID, "submissionIds": body.SubmissionIDs}
+		case "promote":
+			command = "queue.promote"
+			payload = map[string]string{"id": sessionID, "submissionId": body.SubmissionID}
+		default:
+			writeErrorStatus(w, http.StatusBadRequest, "未知队列操作")
+			return
+		}
+		result, commandErr := s.command(user.ID, deviceID, command, payload)
+		if commandErr != nil {
+			writeErrorStatus(w, http.StatusBadGateway, commandErr.Error())
+			return
+		}
+		writeRawJSON(w, result)
+	case "goal":
+		var body struct {
+			Objective string `json:"objective"`
+			Clear     bool   `json:"clear"`
+		}
+		if err := decodeJSON(request, &body); err != nil {
+			writeErrorStatus(w, http.StatusBadRequest, "请求格式不正确")
+			return
+		}
+		command := "goal.set"
+		payload := interface{}(map[string]string{"id": sessionID, "objective": body.Objective})
+		if body.Clear {
+			command = "goal.clear"
+			payload = map[string]string{"id": sessionID}
+		}
+		result, commandErr := s.command(user.ID, deviceID, command, payload)
+		if commandErr != nil {
+			writeErrorStatus(w, http.StatusBadGateway, commandErr.Error())
+			return
+		}
+		writeRawJSON(w, result)
 	default:
 		writeErrorStatus(w, http.StatusNotFound, "接口不存在")
 	}
@@ -1854,8 +1950,10 @@ func (s *relayServer) openapi(w http.ResponseWriter, request *http.Request) {
 			"/api/sessions/{id}/messages":   map[string]interface{}{"post": map[string]string{"summary": "发送消息并经 WebSocket 转发"}},
 			"/api/sessions/{id}/approvals":  map[string]interface{}{"post": map[string]string{"summary": "提交审批"}},
 			"/api/sessions/{id}/cancel":     map[string]interface{}{"post": map[string]string{"summary": "取消当前 turn"}},
-			"/api/uploads":                  map[string]interface{}{"post": map[string]string{"summary": "上传图片附件"}},
-			"/api/uploads/{id}":             map[string]interface{}{"get": map[string]string{"summary": "读取当前用户的图片附件"}},
+			"/api/sessions/{id}/queue":      map[string]interface{}{"get": map[string]string{"summary": "读取 Codex 原生待发送队列"}, "post": map[string]string{"summary": "管理 Codex 原生待发送队列"}},
+			"/api/sessions/{id}/goal":       map[string]interface{}{"get": map[string]string{"summary": "读取 Codex 线程目标"}, "post": map[string]string{"summary": "设置或清除 Codex 线程目标"}},
+			"/api/uploads":                  map[string]interface{}{"post": map[string]string{"summary": "上传文件附件"}},
+			"/api/uploads/{id}":             map[string]interface{}{"get": map[string]string{"summary": "读取当前用户的文件附件"}},
 		},
 	})
 }

@@ -137,7 +137,7 @@ export class P2PTransport {
 
   async uploadAttachment(name: string, mimeType: string, dataUrl: string) {
     const raw = decodeDataURL(dataUrl);
-    if (raw.byteLength === 0 || raw.byteLength > 10 * 1024 * 1024) throw new Error("单张图片不能超过 10MB");
+    if (raw.byteLength === 0 || raw.byteLength > 16 * 1024 * 1024) throw new Error("单个文件必须小于 16MB");
     const uploadId = randomID();
     await this.request("uploads.start", { uploadId, name, mimeType, size: raw.byteLength });
     for (let offset = 0; offset < raw.byteLength; offset += uploadChunkBytes) {

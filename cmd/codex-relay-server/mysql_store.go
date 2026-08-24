@@ -778,26 +778,23 @@ func (s *mysqlRelayStore) unsubscribe(userID string, channel chan Event) {
 }
 
 func (s *mysqlRelayStore) saveUpload(userID string, attachment Attachment, dataURL string) (Attachment, error) {
-	if !strings.HasPrefix(strings.ToLower(attachment.MimeType), "image/") {
-		return Attachment{}, errors.New("只支持图片附件")
-	}
 	comma := strings.Index(dataURL, ",")
 	if comma < 0 || !strings.Contains(strings.ToLower(dataURL[:comma]), ";base64") {
-		return Attachment{}, errors.New("图片数据无效")
+		return Attachment{}, errors.New("文件数据无效")
 	}
 	raw, err := base64.StdEncoding.DecodeString(dataURL[comma+1:])
-	if err != nil || len(raw) == 0 || len(raw) > maxImageBytes {
-		return Attachment{}, errors.New("图片数据无效或超过 10MB")
+	if err != nil || len(raw) == 0 || len(raw) > maxAttachmentBytes {
+		return Attachment{}, errors.New("文件数据无效或超过 16MB")
 	}
 	attachment.ID = randomID()
 	attachment.Path = filepath.Join(s.uploadDir, attachment.ID+".bin")
 	attachment.DataURL = ""
 	attachment.URL = "/api/uploads/" + attachment.ID
 	if attachment.Name == "" {
-		attachment.Name = "image.png"
+		attachment.Name = "attachment.bin"
 	}
 	if err := os.WriteFile(attachment.Path, raw, 0o600); err != nil {
-		return Attachment{}, fmt.Errorf("保存图片失败: %w", err)
+		return Attachment{}, fmt.Errorf("保存文件失败: %w", err)
 	}
 	_, err = s.db.Exec(`INSERT INTO uploads (id, user_id, name, mime_type, file_path, file_size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, attachment.ID, userID, attachment.Name, attachment.MimeType, attachment.Path, len(raw), time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
@@ -829,11 +826,11 @@ func (s *mysqlRelayStore) resolveAttachments(userID string, attachments []Attach
 	result := make([]Attachment, 0, len(attachments))
 	for _, attachment := range attachments {
 		if attachment.ID == "" {
-			return nil, errors.New("图片附件缺少 ID")
+			return nil, errors.New("附件缺少 ID")
 		}
 		upload, ok := s.upload(userID, attachment.ID)
 		if !ok {
-			return nil, errors.New("图片附件不存在或不属于当前用户")
+			return nil, errors.New("附件不存在或不属于当前用户")
 		}
 		item := upload.Attachment
 		item.DataURL = upload.DataURL

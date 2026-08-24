@@ -399,6 +399,107 @@ func (a *remoteAgent) executeCommand(action string, payload json.RawMessage) (in
 			return nil, err
 		}
 		return map[string]bool{"ok": true}, nil
+	case "queue.list":
+		var body struct {
+			ID string `json:"id"`
+		}
+		_ = json.Unmarshal(payload, &body)
+		if body.ID == "" {
+			return nil, errors.New("缺少会话 ID")
+		}
+		queue, err := a.bridge.QueueList(body.ID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"queue": queue}, nil
+	case "queue.add":
+		var body struct {
+			ID          string       `json:"id"`
+			Text        string       `json:"text"`
+			Attachments []Attachment `json:"attachments"`
+		}
+		_ = json.Unmarshal(payload, &body)
+		attachments, err := a.materializeAttachments(body.Attachments)
+		if err != nil {
+			return nil, err
+		}
+		queued, err := a.bridge.QueueAdd(body.ID, strings.TrimSpace(body.Text), attachments)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"queuedSubmission": queued}, nil
+	case "queue.update":
+		var body struct {
+			ID           string                   `json:"id"`
+			SubmissionID string                   `json:"submissionId"`
+			Input        []map[string]interface{} `json:"input"`
+		}
+		_ = json.Unmarshal(payload, &body)
+		queued, err := a.bridge.QueueUpdate(body.ID, body.SubmissionID, body.Input)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"queuedSubmission": queued}, nil
+	case "queue.delete":
+		var body struct {
+			ID           string `json:"id"`
+			SubmissionID string `json:"submissionId"`
+		}
+		_ = json.Unmarshal(payload, &body)
+		if err := a.bridge.QueueDelete(body.ID, body.SubmissionID); err != nil {
+			return nil, err
+		}
+		return map[string]bool{"ok": true}, nil
+	case "queue.reorder":
+		var body struct {
+			ID            string   `json:"id"`
+			SubmissionIDs []string `json:"submissionIds"`
+		}
+		_ = json.Unmarshal(payload, &body)
+		if err := a.bridge.QueueReorder(body.ID, body.SubmissionIDs); err != nil {
+			return nil, err
+		}
+		return map[string]bool{"ok": true}, nil
+	case "queue.promote":
+		var body struct {
+			ID           string `json:"id"`
+			SubmissionID string `json:"submissionId"`
+		}
+		_ = json.Unmarshal(payload, &body)
+		if err := a.bridge.PromoteQueue(body.ID, body.SubmissionID); err != nil {
+			return nil, err
+		}
+		return map[string]bool{"ok": true}, nil
+	case "goal.get":
+		var body struct {
+			ID string `json:"id"`
+		}
+		_ = json.Unmarshal(payload, &body)
+		goal, err := a.bridge.GetGoal(body.ID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"goal": goal}, nil
+	case "goal.set":
+		var body struct {
+			ID        string `json:"id"`
+			Objective string `json:"objective"`
+		}
+		_ = json.Unmarshal(payload, &body)
+		goal, err := a.bridge.SetGoal(body.ID, body.Objective)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"goal": goal}, nil
+	case "goal.clear":
+		var body struct {
+			ID string `json:"id"`
+		}
+		_ = json.Unmarshal(payload, &body)
+		if err := a.bridge.ClearGoal(body.ID); err != nil {
+			return nil, err
+		}
+		return map[string]bool{"ok": true}, nil
 	case "sessions.approval":
 		var body struct {
 			ID         string `json:"id"`

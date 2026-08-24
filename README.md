@@ -14,13 +14,13 @@ Codex Link 是一个手机优先的 Vue 控制台，用于通过中心服务远�
 
 - 中心服务端使用 Docker Compose，运行 GHCR 镜像 `ghcr.io/ayflying/codex_link:latest`。
 - 浏览器进入设备后优先与本机 agent 建立 WebRTC DataChannel；relay 只传递 SDP/ICE 信令。
-- 会话接口、事件和图片附件优先走浏览器与 agent 的 P2P 通道；打洞失败或连接中断时默认自动回退到原 HTTP/SSE/WebSocket 中转。
+- 会话接口、事件和文件附件优先走浏览器与 agent 的 P2P 通道；打洞失败或连接中断时默认自动回退到原 HTTP/SSE/WebSocket 中转。
 - 账号、Token、设备、会话、事件和图片元数据保存到 MySQL 8.4。
-- 图片二进制保存到 Docker `data` 卷。
+- 服务端中转的文件二进制保存到 Docker `data` 卷。
 - 本机只运行 Go 客户端，主动连接服务端，不开放本地 HTTP 端口。
 - API Key、CCS 配置和 Codex 配置只留在运行 Codex 的电脑上。
 
-P2P 使用 STUN 发现可达地址。relay 自带只响应 Binding 请求的 STUN-only UDP 端口，容器内与网页服务共用 `8787`，Compose 默认映射宿主机 `18787/tcp` 和 `18787/udp`；该端口不转发 DataChannel 流量。STUN 地址、端口映射和 `P2P-only` 开关都是公开服务配置，直接在 `docker-compose.yml` 的 relay 配置和 ports 中修改，不放入 `.env`。设置 `WEBRTC_P2P_ONLY` 为 `true` 后，业务接口和图片传输打洞失败会直接报错，不使用服务端中转。
+P2P 使用 STUN 发现可达地址。relay 自带只响应 Binding 请求的 STUN-only UDP 端口，容器内与网页服务共用 `8787`，Compose 默认映射宿主机 `18787/tcp` 和 `18787/udp`；该端口不转发 DataChannel 流量。STUN 地址、端口映射和 `P2P-only` 开关都是公开服务配置，直接在 `docker-compose.yml` 的 relay 配置和 ports 中修改，不放入 `.env`。设置 `WEBRTC_P2P_ONLY` 为 `true` 后，业务接口和文件传输打洞失败会直接报错，不使用服务端中转。
 
 ## 部署中心服务端
 

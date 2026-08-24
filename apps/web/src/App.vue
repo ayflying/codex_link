@@ -2,6 +2,8 @@
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import {
   ArrowLeft,
+  ArrowDown,
+  ArrowUp,
   Check,
   ChevronDown,
   ChevronRight,
@@ -18,6 +20,7 @@ import {
   Menu,
   MessageSquarePlus,
   Network,
+  Paperclip,
   Pencil,
   Plus,
   Play,
@@ -26,6 +29,7 @@ import {
   Send,
   Save,
   ShieldCheck,
+  Target,
   Trash2,
   User,
   Users,
@@ -65,7 +69,16 @@ import {
   updatePortMapping,
   updateAdminUser,
   updateSettings,
-  uploadImage,
+  addQueue,
+  clearGoal,
+  deleteQueue,
+  getGoal,
+  getQueue,
+  promoteQueue,
+  reorderQueue,
+  setGoal,
+  updateQueue,
+  uploadAttachment,
   type AppSettings,
   type AdminUser,
   type Attachment,
@@ -74,9 +87,12 @@ import {
   type ModelOption,
   type PortMapping,
   type PortMappingDraft,
+  type QueuedInput,
+  type QueuedSubmission,
   type RemoteDevice,
   type RemoteEvent,
   type SessionRecord,
+  type ThreadGoal,
   type TokenUsage
 } from "./api";
 import { P2PRemoteError, P2PTransport } from "./p2p";
@@ -111,6 +127,18 @@ const events = ref<RemoteEvent[]>([]);
 const draft = ref("");
 const firstPrompt = ref("");
 const attachments = ref<Attachment[]>([]);
+const queuedSubmissions = ref<QueuedSubmission[]>([]);
+const queueLoading = ref(false);
+const queueActionID = ref("");
+const editingQueueID = ref("");
+const queuedMessageDraft = ref("");
+const queuedMessageInput = ref<QueuedInput[]>([]);
+const threadGoal = ref<ThreadGoal | null>(null);
+const goalEditorOpen = ref(false);
+const goalDraft = ref("");
+const composerMenuOpen = ref(false);
+const composerBusy = ref(false);
+const fileInput = ref<HTMLInputElement | null>(null);
 const settings = ref<AppSettings>({ approvalMode: "on-request", workMode: "edit", model: "" });
 const models = ref<ModelOption[]>([]);
 const devices = ref<RemoteDevice[]>([]);
@@ -162,6 +190,9 @@ const p2p = new P2PTransport({
 
 const activeSession = computed(() => sessions.value.find((session) => session.id === activeSessionId.value));
 const activeDevice = computed(() => devices.value.find((device) => device.id === activeDeviceId.value));
+const composerHasInput = computed(() => Boolean(draft.value.trim()) || attachments.value.length > 0);
+const activeSessionRunning = computed(() => activeSession.value?.status === "running");
+const showStopButton = computed(() => activeSessionRunning.value && !composerHasInput.value);
 const groupedSessions = computed(() => {
   const groups = new Map<string, { cwd: string; label: string; sessions: SessionRecord[] }>();
   for (const session of sessions.value) {
@@ -244,6 +275,12 @@ watch(theme, () => {
 
 watch(activeSessionId, (sessionId) => {
   connectEvents(sessionId);
+	queuedSubmissions.value = [];
+	threadGoal.value = null;
+	if (sessionId) {
+		void loadQueue(sessionId);
+		void loadGoal(sessionId);
+	}
 });
 
 watch(() => events.value.length, async () => {
@@ -908,27 +945,172 @@ async function removeThread(session: SessionRecord) {
 }
 
 async function submitMessage() {
-  if (!activeSession.value || (!draft.value.trim() && attachments.value.length === 0)) return;
-  loading.value = true;
+  if (!activeSession.value || !composerHasInput.value || composerBusy.value) return;
+  composerBusy.value = true;
   error.value = "";
   try {
-    const messageAttachments = attachments.value;
-    if (p2p.isConnected() && messageAttachments.every((attachment) => attachment.transport === "p2p" && Boolean(attachment.path))) {
-      const directAttachments = messageAttachments.map(({ dataUrl: _dataUrl, previewUrl: _previewUrl, transport: _transport, ...attachment }) => attachment);
-      await commandWithFallback(
-        "sessions.message",
-        { id: activeSession.value.id, text: draft.value.trim(), attachments: directAttachments },
-        async () => sendMessage(activeSession.value!.id, draft.value.trim(), await relayAttachments(messageAttachments))
-      );
+    const sessionID = activeSession.value.id;
+    const text = draft.value.trim();
+    const messageAttachments = [...attachments.value];
+    if (activeSessionRunning.value) {
+      const result = p2p.isConnected() && messageAttachments.every((attachment) => attachment.transport === "p2p" && Boolean(attachment.path))
+        ? await commandWithFallback<{ queuedSubmission: QueuedSubmission }>(
+            "queue.add",
+            { id: sessionID, text, attachments: messageAttachments.map(({ dataUrl: _dataUrl, previewUrl: _previewUrl, transport: _transport, ...attachment }) => attachment) },
+            async () => addQueue(sessionID, text, await relayAttachments(messageAttachments))
+          )
+        : await addQueue(sessionID, text, await relayAttachments(messageAttachments));
+      queuedSubmissions.value.push(result.queuedSubmission);
     } else {
-      await sendMessage(activeSession.value.id, draft.value.trim(), await relayAttachments(messageAttachments));
+      if (p2p.isConnected() && messageAttachments.every((attachment) => attachment.transport === "p2p" && Boolean(attachment.path))) {
+        const directAttachments = messageAttachments.map(({ dataUrl: _dataUrl, previewUrl: _previewUrl, transport: _transport, ...attachment }) => attachment);
+        await commandWithFallback(
+          "sessions.message",
+          { id: sessionID, text, attachments: directAttachments },
+          async () => sendMessage(sessionID, text, await relayAttachments(messageAttachments))
+        );
+      } else {
+        await sendMessage(sessionID, text, await relayAttachments(messageAttachments));
+      }
     }
     draft.value = "";
     attachments.value = [];
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : String(reason);
   } finally {
-    loading.value = false;
+    composerBusy.value = false;
+  }
+}
+
+function queueText(item: QueuedSubmission) {
+  return item.input.filter((part) => part.type === "text").map((part) => part.text || "").join("\n");
+}
+
+function queueAttachments(item: QueuedSubmission): Attachment[] {
+  return item.input
+    .filter((part) => part.type === "localImage" || part.type === "mention")
+    .map((part) => ({ name: part.name || part.path?.split(/[\\/]/).pop() || "附件", path: part.path, mimeType: part.type === "localImage" ? "image/*" : "" }));
+}
+
+async function loadQueue(sessionID: string) {
+  queueLoading.value = true;
+  try {
+    const result = await commandWithFallback<{ queue: QueuedSubmission[] }>("queue.list", { id: sessionID }, () => getQueue(sessionID));
+    if (activeSessionId.value === sessionID) queuedSubmissions.value = result.queue || [];
+  } catch (reason) {
+    if (activeSessionId.value === sessionID) error.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    queueLoading.value = false;
+  }
+}
+
+async function loadGoal(sessionID: string) {
+  try {
+    const result = await commandWithFallback<{ goal: ThreadGoal | null }>("goal.get", { id: sessionID }, () => getGoal(sessionID));
+    if (activeSessionId.value === sessionID) threadGoal.value = result.goal;
+  } catch (reason) {
+    if (activeSessionId.value === sessionID) error.value = reason instanceof Error ? reason.message : String(reason);
+  }
+}
+
+function editQueue(item: QueuedSubmission) {
+  editingQueueID.value = item.id;
+  queuedMessageDraft.value = queueText(item);
+  queuedMessageInput.value = item.input;
+}
+
+function cancelEditQueue() {
+  editingQueueID.value = "";
+  queuedMessageDraft.value = "";
+  queuedMessageInput.value = [];
+}
+
+async function saveQueueEdit() {
+  if (!activeSession.value || !editingQueueID.value || !queuedMessageDraft.value.trim()) return;
+  queueActionID.value = editingQueueID.value;
+  try {
+    const input = queuedMessageInput.value.map((part) => part.type === "text" ? { ...part, text: queuedMessageDraft.value.trim() } : part);
+    const result = await commandWithFallback<{ queuedSubmission: QueuedSubmission }>(
+      "queue.update",
+      { id: activeSession.value.id, submissionId: editingQueueID.value, input },
+      () => updateQueue(activeSession.value!.id, editingQueueID.value, input)
+    );
+    const index = queuedSubmissions.value.findIndex((item) => item.id === editingQueueID.value);
+    if (index >= 0) queuedSubmissions.value[index] = result.queuedSubmission;
+    cancelEditQueue();
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    queueActionID.value = "";
+  }
+}
+
+async function removeQueue(item: QueuedSubmission) {
+  if (!activeSession.value) return;
+  queueActionID.value = item.id;
+  try {
+    await commandWithFallback("queue.delete", { id: activeSession.value.id, submissionId: item.id }, () => deleteQueue(activeSession.value!.id, item.id));
+    queuedSubmissions.value = queuedSubmissions.value.filter((entry) => entry.id !== item.id);
+    if (editingQueueID.value === item.id) cancelEditQueue();
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    queueActionID.value = "";
+  }
+}
+
+async function moveQueue(item: QueuedSubmission, direction: -1 | 1) {
+  if (!activeSession.value) return;
+  const index = queuedSubmissions.value.findIndex((entry) => entry.id === item.id);
+  const next = index + direction;
+  if (index < 0 || next < 0 || next >= queuedSubmissions.value.length) return;
+  const ids = queuedSubmissions.value.map((entry) => entry.id);
+  [ids[index], ids[next]] = [ids[next], ids[index]];
+  queueActionID.value = item.id;
+  try {
+    await commandWithFallback("queue.reorder", { id: activeSession.value.id, submissionIds: ids }, () => reorderQueue(activeSession.value!.id, ids));
+    const items = [...queuedSubmissions.value];
+    [items[index], items[next]] = [items[next], items[index]];
+    queuedSubmissions.value = items;
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    queueActionID.value = "";
+  }
+}
+
+async function promoteQueued(item: QueuedSubmission) {
+  if (!activeSession.value) return;
+  queueActionID.value = item.id;
+  try {
+    await commandWithFallback("queue.promote", { id: activeSession.value.id, submissionId: item.id }, () => promoteQueue(activeSession.value!.id, item.id));
+    queuedSubmissions.value = queuedSubmissions.value.filter((entry) => entry.id !== item.id);
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason);
+  } finally {
+    queueActionID.value = "";
+  }
+}
+
+async function saveGoalDraft() {
+  if (!activeSession.value || !goalDraft.value.trim()) return;
+  try {
+    const result = await commandWithFallback<{ goal: ThreadGoal }>("goal.set", { id: activeSession.value.id, objective: goalDraft.value }, () => setGoal(activeSession.value!.id, goalDraft.value));
+    threadGoal.value = result.goal;
+    goalEditorOpen.value = false;
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason);
+  }
+}
+
+async function removeGoal() {
+  if (!activeSession.value) return;
+  try {
+    await commandWithFallback("goal.clear", { id: activeSession.value.id }, () => clearGoal(activeSession.value!.id));
+    threadGoal.value = null;
+    goalEditorOpen.value = false;
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason);
   }
 }
 
@@ -958,9 +1140,20 @@ function selectModel(event: Event) {
   void saveSettings({ model });
 }
 
-async function addImageFiles(files: File[]) {
+function openFilePicker() {
+  composerMenuOpen.value = false;
+  fileInput.value?.click();
+}
+
+function openGoalEditor() {
+  goalDraft.value = threadGoal.value?.objective || "";
+  goalEditorOpen.value = true;
+  composerMenuOpen.value = false;
+}
+
+async function addFiles(files: File[]) {
   try {
-    for (const file of files) await addImageFile(file);
+    for (const file of files) await addAttachmentFile(file);
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : String(reason);
   }
@@ -971,13 +1164,13 @@ async function handlePaste(event: ClipboardEvent) {
   const imageItems = items.filter((item) => item.type.startsWith("image/"));
   if (imageItems.length === 0) return;
   event.preventDefault();
-  await addImageFiles(imageItems.map((item) => item.getAsFile()).filter((file): file is File => Boolean(file)));
+  await addFiles(imageItems.map((item) => item.getAsFile()).filter((file): file is File => Boolean(file)));
 }
 
 async function handleFilePicked(event: Event) {
   const input = event.target as HTMLInputElement;
   const files = Array.from(input.files || []);
-  await addImageFiles(files);
+  await addFiles(files);
   input.value = "";
 }
 
@@ -998,16 +1191,44 @@ function handleComposerDragLeave(event: DragEvent) {
 async function handleComposerDrop(event: DragEvent) {
   event.preventDefault();
   composerDropActive.value = false;
-  const files = Array.from(event.dataTransfer?.files || []).filter((file) => file.type.startsWith("image/"));
-  await addImageFiles(files);
+  try {
+    const files = await droppedFiles(event.dataTransfer);
+    await addFiles(files);
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason);
+  }
 }
 
-async function addImageFile(file: File) {
-  if (!file.type.startsWith("image/")) return;
+async function droppedFiles(dataTransfer: DataTransfer | null): Promise<File[]> {
+  if (!dataTransfer) return [];
+  const entries = Array.from(dataTransfer.items)
+    .map((item) => item.webkitGetAsEntry?.())
+    .filter((entry): entry is FileSystemEntry => entry !== null);
+  if (entries.length === 0) return Array.from(dataTransfer.files);
+  return (await Promise.all(entries.map(entryFiles))).flat();
+}
+
+async function entryFiles(entry: FileSystemEntry): Promise<File[]> {
+  if (entry.isFile) {
+    const fileEntry = entry as FileSystemFileEntry;
+    return new Promise((resolve) => fileEntry.file((file) => resolve([file]), () => resolve([])));
+  }
+  if (!entry.isDirectory) return [];
+  const reader = (entry as FileSystemDirectoryEntry).createReader();
+  const children: FileSystemEntry[] = [];
+  while (true) {
+    const batch = await new Promise<FileSystemEntry[]>((resolve) => reader.readEntries(resolve, () => resolve([])));
+    if (batch.length === 0) break;
+    children.push(...batch);
+  }
+  return (await Promise.all(children.map(entryFiles))).flat();
+}
+
+async function addAttachmentFile(file: File) {
   const dataUrl = await fileToDataURL(file);
-  const name = file.name || `image-${Date.now()}.png`;
+  const name = file.name || `attachment-${Date.now()}.bin`;
   if (!p2p.isConnected() && p2p.isP2POnly()) {
-    throw new Error("P2P 连接未建立，已禁止服务端图片中转");
+    throw new Error("P2P 连接未建立，已禁止服务端文件中转");
   }
   if (p2p.isConnected()) {
     try {
@@ -1016,11 +1237,11 @@ async function addImageFile(file: File) {
       return;
     } catch {
       p2p.close(true);
-      if (p2p.isP2POnly()) throw new Error("P2P 图片传输失败，已禁止服务端中转");
+      if (p2p.isP2POnly()) throw new Error("P2P 文件传输失败，已禁止服务端中转");
     }
   }
-  const { attachment } = await uploadImage(name, file.type, dataUrl);
-  attachments.value.push({ ...attachment, transport: "relay" });
+  const { attachment } = await uploadAttachment(name, file.type || "application/octet-stream", dataUrl);
+  attachments.value.push({ ...attachment, dataUrl, previewUrl: file.type.startsWith("image/") ? dataUrl : undefined, transport: "relay" });
 }
 
 async function relayAttachments(source: Attachment[]) {
@@ -1033,7 +1254,7 @@ async function relayAttachments(source: Attachment[]) {
     }
     if (p2p.isP2POnly()) throw new Error("P2P 图片无法回退到服务端，请重新选择图片");
     if (!attachment.dataUrl) throw new Error("P2P 图片无法回退到服务端，请重新选择图片");
-    const uploaded = await uploadImage(attachment.name || `image-${Date.now()}.png`, attachment.mimeType || "image/png", attachment.dataUrl);
+    const uploaded = await uploadAttachment(attachment.name || `attachment-${Date.now()}.bin`, attachment.mimeType || "application/octet-stream", attachment.dataUrl);
     result.push({ ...uploaded.attachment, transport: "relay" });
   }
   return result;
@@ -1167,6 +1388,9 @@ function connectEvents(sessionId: string, reset = true) {
     "approval.resolved",
     "turn.done",
     "context.usage",
+    "queue.changed",
+    "goal.updated",
+    "goal.cleared",
     "error"
   ];
   for (const type of types) {
@@ -1199,6 +1423,9 @@ function acceptRemoteEvent(event: RemoteEvent) {
       updatedAt: event.ts
     });
   }
+  if (event.type === "queue.changed") void loadQueue(event.sessionId);
+  if (event.type === "goal.updated") threadGoal.value = (event.payload.goal as ThreadGoal | undefined) || null;
+  if (event.type === "goal.cleared") threadGoal.value = null;
 }
 
 function drainPendingEvents(sessionId: string) {
@@ -1471,6 +1698,9 @@ function eventLabel(event: RemoteEvent) {
     "approval.resolved": "审批结果",
     "turn.done": "完成",
     "context.usage": "上下文",
+    "queue.changed": "队列",
+    "goal.updated": "目标已更新",
+    "goal.cleared": "目标已清除",
     error: "错误"
   };
   return labels[event.type];
@@ -2069,18 +2299,6 @@ function transportLabel(status: typeof transportState.value) {
             <Gauge :size="16" />
             <span>{{ contextUsageLabel(activeSession) }}</span>
           </div>
-          <div class="segmented-control" aria-label="工作模式">
-            <button type="button" :class="{ active: settings.workMode === 'edit' }" @click="saveSettings({ workMode: 'edit' })">编辑</button>
-            <button type="button" :class="{ active: settings.workMode === 'plan' }" @click="saveSettings({ workMode: 'plan' })">计划</button>
-          </div>
-          <label class="select-control">
-            <ShieldCheck :size="16" />
-            <select v-model="settings.approvalMode" @change="saveSettings({ approvalMode: settings.approvalMode })">
-              <option value="on-request">请求批准</option>
-              <option value="on-failure">按需批准</option>
-              <option value="never">完全访问权限</option>
-            </select>
-          </label>
         </section>
 
         <section v-if="activeSession" ref="transcriptEl" class="transcript">
@@ -2134,35 +2352,76 @@ function transportLabel(status: typeof transportState.value) {
           @dragleave="handleComposerDragLeave"
           @drop="handleComposerDrop"
         >
+          <section v-if="queuedSubmissions.length" class="queue-panel" aria-label="待发送消息">
+            <div class="queue-panel-heading">
+              <span><Clock3 :size="15" />待发送 {{ queuedSubmissions.length }}</span>
+              <small v-if="queueLoading">正在同步</small>
+            </div>
+            <article v-for="(item, index) in queuedSubmissions" :key="item.id" class="queue-item">
+              <template v-if="editingQueueID === item.id">
+                <textarea v-model="queuedMessageDraft" rows="2" aria-label="编辑排队消息" />
+                <div class="queue-item-actions">
+                  <button type="button" class="primary icon-text" :disabled="queueActionID === item.id" @click="saveQueueEdit"><Save :size="14" /><span>保存</span></button>
+                  <button type="button" class="ghost icon-text" @click="cancelEditQueue"><X :size="14" /><span>取消</span></button>
+                </div>
+              </template>
+              <template v-else>
+                <div class="queue-item-main">
+                  <span class="queue-item-index">{{ index + 1 }}</span>
+                  <span class="queue-item-text">{{ queueText(item) || "附件" }}</span>
+                  <span v-if="queueAttachments(item).length" class="queue-item-attachment">{{ queueAttachments(item).length }} 个附件</span>
+                </div>
+                <div class="queue-item-actions">
+                  <button type="button" class="queue-direction icon-text" title="调整方向并立即发送" :disabled="queueActionID === item.id" @click="promoteQueued(item)"><ArrowUp :size="14" /><span>调整方向</span></button>
+                  <button type="button" class="queue-icon" title="上移" :disabled="index === 0 || queueActionID === item.id" @click="moveQueue(item, -1)"><ArrowUp :size="15" /></button>
+                  <button type="button" class="queue-icon" title="下移" :disabled="index === queuedSubmissions.length - 1 || queueActionID === item.id" @click="moveQueue(item, 1)"><ArrowDown :size="15" /></button>
+                  <button type="button" class="queue-icon" title="编辑排队消息" @click="editQueue(item)"><Pencil :size="15" /></button>
+                  <button type="button" class="queue-icon queue-remove" title="删除排队消息" :disabled="queueActionID === item.id" @click="removeQueue(item)"><Trash2 :size="15" /></button>
+                </div>
+              </template>
+            </article>
+          </section>
           <div v-if="composerDropActive" class="composer-drop-hint" aria-live="polite">
             <ImagePlus :size="18" />
-            <span>释放图片以上传</span>
+            <span>释放文件以上传</span>
           </div>
           <div v-if="attachments.length" class="attachment-strip">
             <figure v-for="(attachment, index) in attachments" :key="attachment.id || attachment.path || index">
               <img v-if="attachment.url || attachment.previewUrl" :src="attachment.url || attachment.previewUrl" :alt="attachment.name || '图片附件'" />
-              <figcaption>{{ attachment.name || "图片" }}</figcaption>
-              <button type="button" title="移除图片" @click="removeAttachment(index)">
+              <figcaption>{{ attachment.name || "附件" }}</figcaption>
+              <button type="button" title="移除附件" @click="removeAttachment(index)">
                 <X :size="14" />
               </button>
             </figure>
           </div>
-          <button class="icon-button stop" type="button" title="取消当前 turn" :disabled="!activeSession" @click="cancel">
-            <CircleStop :size="20" />
-          </button>
-          <label class="icon-button attach-button" title="添加图片">
-            <ImagePlus :size="20" />
-            <input type="file" accept="image/*" multiple @change="handleFilePicked" />
-          </label>
-          <textarea
-            v-model="draft"
-            rows="3"
-            placeholder="继续给 Codex 发消息"
-            :disabled="!activeSession"
-            @keydown="handleComposerKeydown"
-          />
-          <button class="primary send" type="submit" title="发送" :disabled="!activeSession || (!draft.trim() && !attachments.length) || loading">
-            <Send :size="19" />
+          <div class="composer-entry">
+            <textarea
+              v-model="draft"
+              rows="3"
+              placeholder="随心输入"
+              :disabled="!activeSession"
+              @keydown="handleComposerKeydown"
+            />
+            <div class="composer-actions">
+              <button class="icon-button composer-plus" type="button" title="添加文件、目标或计划模式" :disabled="!activeSession" @click="composerMenuOpen = !composerMenuOpen"><Plus :size="20" /></button>
+              <label class="composer-permission"><ShieldCheck :size="15" /><select v-model="settings.approvalMode" aria-label="权限模式" @change="saveSettings({ approvalMode: settings.approvalMode })"><option value="on-request">请求批准</option><option value="on-failure">按需批准</option><option value="never">完全访问</option></select></label>
+            </div>
+          </div>
+          <div v-if="composerMenuOpen" class="composer-menu">
+            <div class="composer-menu-label">添加</div>
+            <button type="button" class="composer-menu-item" @click="openFilePicker"><Paperclip :size="16" /><span>文件和文件夹</span></button>
+            <button type="button" class="composer-menu-item" :class="{ active: threadGoal }" @click="openGoalEditor"><Target :size="16" /><span>目标</span><small>{{ threadGoal ? "已设置" : "设置要持续追踪的目标" }}</small></button>
+            <button type="button" class="composer-menu-item" :class="{ active: settings.workMode === 'plan' }" @click="saveSettings({ workMode: settings.workMode === 'plan' ? 'edit' : 'plan' }); composerMenuOpen = false"><Clock3 :size="16" /><span>计划模式</span><small>{{ settings.workMode === 'plan' ? "已开启" : "开启计划模式" }}</small></button>
+          </div>
+          <div v-if="goalEditorOpen" class="goal-editor">
+            <div class="goal-editor-heading"><Target :size="16" /><strong>目标</strong><button type="button" class="queue-icon" title="关闭" @click="goalEditorOpen = false"><X :size="15" /></button></div>
+            <textarea v-model="goalDraft" rows="3" placeholder="告诉 Codex 这项工作的目标" />
+            <div class="goal-editor-actions"><button type="button" class="primary icon-text" @click="saveGoalDraft"><Save :size="14" /><span>保存目标</span></button><button v-if="threadGoal" type="button" class="ghost icon-text" @click="removeGoal"><Trash2 :size="14" /><span>清除</span></button></div>
+          </div>
+          <input ref="fileInput" class="hidden-file-input" type="file" multiple @change="handleFilePicked" />
+          <button class="primary send" :class="{ stop: showStopButton }" type="button" :title="showStopButton ? '停止' : activeSessionRunning ? '加入队列' : '发送'" :disabled="!activeSession || (!showStopButton && !composerHasInput) || composerBusy" @click="showStopButton ? cancel() : submitMessage()">
+            <CircleStop v-if="showStopButton" :size="19" />
+            <Send v-else :size="19" />
           </button>
         </form>
       </section>

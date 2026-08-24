@@ -101,6 +101,19 @@ type Attachment struct {
 	DataURL  string `json:"dataUrl,omitempty"`
 }
 
+type QueuedSubmission struct {
+	ID                  string                   `json:"id"`
+	ClientUserMessageID string                   `json:"clientUserMessageId"`
+	Input               []map[string]interface{} `json:"input"`
+}
+
+type ThreadGoal struct {
+	ThreadID    string `json:"threadId"`
+	Objective   string `json:"objective"`
+	Status      string `json:"status"`
+	TokenBudget *int64 `json:"tokenBudget,omitempty"`
+}
+
 func NewStore(dataDir string) *Store {
 	_ = os.MkdirAll(dataDir, 0o755)
 	store := &Store{
@@ -592,9 +605,38 @@ func (b *Bridge) mapCodexEvent(method string, params interface{}, requestID int6
 		return
 	}
 	switch method {
+	case "turn/started":
+		turn := asMap(payload["turn"])
+		turnID := stringValue(firstNonEmpty(turn["id"], payload["turnId"]))
+		threadID := stringValue(firstNonEmpty(turn["threadId"], payload["threadId"]))
+		b.mu.Lock()
+		if threadID == "" || threadID == b.codexThreadID {
+			b.activeTurnID = turnID
+		}
+		b.mu.Unlock()
+		b.updateStatus("running")
 	case "turn/completed":
+		turn := asMap(payload["turn"])
+		threadID := stringValue(firstNonEmpty(turn["threadId"], payload["threadId"]))
+		b.mu.Lock()
+		if threadID == "" || threadID == b.codexThreadID {
+			b.activeTurnID = ""
+		}
+		b.mu.Unlock()
 		b.updateStatus("done")
 		b.emit("turn.done", payload)
+		if threadID != "" {
+			go b.startNextQueuedSubmission(threadID)
+		}
+	case "thread/queue/changed":
+		threadID := stringValue(payload["threadId"])
+		b.emitForSession(threadID, "queue.changed", map[string]interface{}{})
+	case "thread/goal/updated":
+		threadID := stringValue(payload["threadId"])
+		b.emitForSession(threadID, "goal.updated", map[string]interface{}{"goal": payload["goal"]})
+	case "thread/goal/cleared":
+		threadID := stringValue(payload["threadId"])
+		b.emitForSession(threadID, "goal.cleared", map[string]interface{}{})
 	case "item/agentMessage/delta":
 		b.emit("assistant.delta", map[string]interface{}{"text": stringValue(payload["delta"])})
 	case "command/exec/outputDelta", "item/commandExecution/outputDelta", "process/outputDelta":
@@ -789,22 +831,14 @@ func (b *Bridge) startCodexThread() error {
 }
 
 func (b *Bridge) SendMessage(text, sessionID string, attachments []Attachment) error {
-	b.mu.Lock()
-	missing := b.session == nil || (sessionID != "" && b.session.ID != sessionID)
-	b.mu.Unlock()
-	if missing {
-		if sessionID != "" {
-			if _, err := b.ResumeThread(sessionID); err != nil {
-				if _, createErr := b.CreateSession(""); createErr != nil {
-					return createErr
-				}
-			}
-		} else if _, err := b.CreateSession(""); err != nil {
-			return err
-		}
+	if err := b.ensureSession(sessionID); err != nil {
+		return err
 	}
-	text = messageWithAttachments(text, attachments)
-	b.emit("user.message", map[string]interface{}{"text": text, "attachments": attachments})
+	input := messageInput(text, attachments)
+	if len(input) == 0 {
+		return errors.New("消息不能为空")
+	}
+	b.emitUserInput(input)
 	b.updateStatus("running")
 	b.mu.Lock()
 	threadID := b.codexThreadID
@@ -812,9 +846,7 @@ func (b *Bridge) SendMessage(text, sessionID string, attachments []Attachment) e
 	settings := b.store.Settings()
 	params := withRuntimeOptions(map[string]interface{}{
 		"threadId": threadID,
-		"input": []map[string]interface{}{
-			{"type": "text", "text": text, "text_elements": []interface{}{}},
-		},
+		"input":    input,
 	}, settings)
 	result, err := b.request("turn/start", withModelOption(params, settings))
 	if err != nil {
@@ -825,6 +857,249 @@ func (b *Bridge) SendMessage(text, sessionID string, attachments []Attachment) e
 	b.activeTurnID = turnID
 	b.mu.Unlock()
 	return nil
+}
+
+func (b *Bridge) ensureSession(sessionID string) error {
+	b.mu.Lock()
+	missing := b.session == nil || (sessionID != "" && b.session.ID != sessionID)
+	b.mu.Unlock()
+	if !missing {
+		return nil
+	}
+	if sessionID != "" {
+		if _, err := b.ResumeThread(sessionID); err != nil {
+			return err
+		}
+		return nil
+	}
+	_, err := b.CreateSession("")
+	return err
+}
+
+func (b *Bridge) QueueList(sessionID string) ([]QueuedSubmission, error) {
+	if err := b.ensureSession(sessionID); err != nil {
+		return nil, err
+	}
+	b.mu.Lock()
+	threadID := b.codexThreadID
+	b.mu.Unlock()
+	result, err := b.request("thread/queue/list", map[string]interface{}{"threadId": threadID, "limit": 100})
+	if err != nil {
+		return nil, err
+	}
+	data, _ := asMap(result)["data"].([]interface{})
+	queue := make([]QueuedSubmission, 0, len(data))
+	for _, raw := range data {
+		item := asMap(raw)
+		input, _ := item["input"].([]interface{})
+		converted := make([]map[string]interface{}, 0, len(input))
+		for _, inputItem := range input {
+			converted = append(converted, asMap(inputItem))
+		}
+		queue = append(queue, QueuedSubmission{
+			ID:                  stringValue(item["id"]),
+			ClientUserMessageID: stringValue(item["clientUserMessageId"]),
+			Input:               converted,
+		})
+	}
+	return queue, nil
+}
+
+func (b *Bridge) QueueAdd(sessionID, text string, attachments []Attachment) (QueuedSubmission, error) {
+	if err := b.ensureSession(sessionID); err != nil {
+		return QueuedSubmission{}, err
+	}
+	input := messageInput(text, attachments)
+	if len(input) == 0 {
+		return QueuedSubmission{}, errors.New("消息不能为空")
+	}
+	b.mu.Lock()
+	threadID := b.codexThreadID
+	b.mu.Unlock()
+	result, err := b.request("thread/queue/add", map[string]interface{}{
+		"threadId":            threadID,
+		"clientUserMessageId": randomID(),
+		"input":               input,
+	})
+	if err != nil {
+		return QueuedSubmission{}, err
+	}
+	item := asMap(asMap(result)["queuedSubmission"])
+	queued := QueuedSubmission{ID: stringValue(item["id"]), ClientUserMessageID: stringValue(item["clientUserMessageId"])}
+	for _, raw := range asInterfaceSlice(item["input"]) {
+		queued.Input = append(queued.Input, asMap(raw))
+	}
+	return queued, nil
+}
+
+func (b *Bridge) QueueUpdate(sessionID, submissionID string, input []map[string]interface{}) (QueuedSubmission, error) {
+	if err := b.ensureSession(sessionID); err != nil {
+		return QueuedSubmission{}, err
+	}
+	if submissionID == "" || len(input) == 0 {
+		return QueuedSubmission{}, errors.New("排队消息不完整")
+	}
+	b.mu.Lock()
+	threadID := b.codexThreadID
+	b.mu.Unlock()
+	result, err := b.request("thread/queue/update", map[string]interface{}{
+		"threadId":           threadID,
+		"queuedSubmissionId": submissionID,
+		"input":              input,
+	})
+	if err != nil {
+		return QueuedSubmission{}, err
+	}
+	item := asMap(asMap(result)["queuedSubmission"])
+	queued := QueuedSubmission{ID: stringValue(item["id"]), ClientUserMessageID: stringValue(item["clientUserMessageId"])}
+	for _, raw := range asInterfaceSlice(item["input"]) {
+		queued.Input = append(queued.Input, asMap(raw))
+	}
+	return queued, nil
+}
+
+func (b *Bridge) QueueDelete(sessionID, submissionID string) error {
+	if err := b.ensureSession(sessionID); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	threadID := b.codexThreadID
+	b.mu.Unlock()
+	_, err := b.request("thread/queue/delete", map[string]interface{}{"threadId": threadID, "queuedSubmissionId": submissionID})
+	return err
+}
+
+func (b *Bridge) QueueReorder(sessionID string, submissionIDs []string) error {
+	if err := b.ensureSession(sessionID); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	threadID := b.codexThreadID
+	b.mu.Unlock()
+	_, err := b.request("thread/queue/reorder", map[string]interface{}{"threadId": threadID, "queuedSubmissionIds": submissionIDs})
+	return err
+}
+
+func (b *Bridge) PromoteQueue(sessionID, submissionID string) error {
+	if err := b.ensureSession(sessionID); err != nil {
+		return err
+	}
+	queue, err := b.QueueList(sessionID)
+	if err != nil {
+		return err
+	}
+	var selected *QueuedSubmission
+	for index := range queue {
+		if queue[index].ID == submissionID {
+			selected = &queue[index]
+			break
+		}
+	}
+	if selected == nil {
+		return errors.New("排队消息不存在")
+	}
+	b.mu.Lock()
+	threadID, turnID := b.codexThreadID, b.activeTurnID
+	b.mu.Unlock()
+	if turnID != "" {
+		params := map[string]interface{}{"threadId": threadID, "expectedTurnId": turnID, "input": selected.Input}
+		if selected.ClientUserMessageID != "" {
+			params["clientUserMessageId"] = selected.ClientUserMessageID
+		}
+		if _, err := b.request("turn/steer", params); err != nil {
+			return err
+		}
+		if err := b.QueueDelete(sessionID, selected.ID); err != nil {
+			return err
+		}
+		b.emitUserInput(selected.Input)
+		return nil
+	}
+	return b.startQueuedSubmission(threadID, selected)
+}
+
+func (b *Bridge) startQueuedSubmission(threadID string, queued *QueuedSubmission) error {
+	if queued == nil || queued.ID == "" {
+		return errors.New("排队消息不存在")
+	}
+	result, err := b.request("thread/queue/start", map[string]interface{}{"threadId": threadID, "queuedSubmissionId": queued.ID})
+	if err != nil {
+		return err
+	}
+	turnID := stringValue(asMap(asMap(result)["turn"])["id"])
+	b.mu.Lock()
+	b.activeTurnID = turnID
+	b.mu.Unlock()
+	b.emitUserInput(queued.Input)
+	b.updateStatus("running")
+	return nil
+}
+
+func (b *Bridge) startNextQueuedSubmission(threadID string) {
+	b.mu.Lock()
+	activeThreadID, activeTurnID := b.codexThreadID, b.activeTurnID
+	b.mu.Unlock()
+	if threadID == "" || threadID != activeThreadID || activeTurnID != "" {
+		return
+	}
+	queue, err := b.QueueList(threadID)
+	if err != nil || len(queue) == 0 {
+		return
+	}
+	_ = b.startQueuedSubmission(threadID, &queue[0])
+}
+
+func (b *Bridge) GetGoal(sessionID string) (*ThreadGoal, error) {
+	if err := b.ensureSession(sessionID); err != nil {
+		return nil, err
+	}
+	b.mu.Lock()
+	threadID := b.codexThreadID
+	b.mu.Unlock()
+	result, err := b.request("thread/goal/get", map[string]interface{}{"threadId": threadID})
+	if err != nil {
+		return nil, err
+	}
+	goal := asMap(result)["goal"]
+	if goal == nil {
+		return nil, nil
+	}
+	raw, _ := json.Marshal(goal)
+	var parsed ThreadGoal
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, err
+	}
+	return &parsed, nil
+}
+
+func (b *Bridge) SetGoal(sessionID, objective string) (*ThreadGoal, error) {
+	if err := b.ensureSession(sessionID); err != nil {
+		return nil, err
+	}
+	b.mu.Lock()
+	threadID := b.codexThreadID
+	b.mu.Unlock()
+	result, err := b.request("thread/goal/set", map[string]interface{}{"threadId": threadID, "objective": strings.TrimSpace(objective), "status": "active"})
+	if err != nil {
+		return nil, err
+	}
+	raw, _ := json.Marshal(asMap(result)["goal"])
+	var goal ThreadGoal
+	if err := json.Unmarshal(raw, &goal); err != nil {
+		return nil, err
+	}
+	return &goal, nil
+}
+
+func (b *Bridge) ClearGoal(sessionID string) error {
+	if err := b.ensureSession(sessionID); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	threadID := b.codexThreadID
+	b.mu.Unlock()
+	_, err := b.request("thread/goal/clear", map[string]interface{}{"threadId": threadID})
+	return err
 }
 
 func (b *Bridge) ResolveApproval(approvalID, decision string) error {
@@ -1226,50 +1501,67 @@ func withModelOption(params map[string]interface{}, settings AppSettings) map[st
 	return params
 }
 
-func messageWithAttachments(text string, attachments []Attachment) string {
-	if len(attachments) == 0 {
-		return text
+func messageInput(text string, attachments []Attachment) []map[string]interface{} {
+	input := []map[string]interface{}{}
+	if text = strings.TrimSpace(text); text != "" {
+		input = append(input, map[string]interface{}{"type": "text", "text": text, "text_elements": []interface{}{}})
 	}
-	lines := []string{}
-	if strings.TrimSpace(text) != "" {
-		lines = append(lines, strings.TrimSpace(text), "")
-	}
-	lines = append(lines, "附件图片：")
 	for _, attachment := range attachments {
 		if attachment.Path == "" {
 			continue
 		}
-		name := attachment.Name
-		if name == "" {
-			name = filepath.Base(attachment.Path)
+		if strings.HasPrefix(strings.ToLower(attachment.MimeType), "image/") {
+			input = append(input, map[string]interface{}{"type": "localImage", "path": attachment.Path})
+			continue
 		}
-		lines = append(lines, fmt.Sprintf("- %s：%s", name, attachment.Path))
+		name := firstNonEmptyString(attachment.Name, filepath.Base(attachment.Path))
+		input = append(input, map[string]interface{}{"type": "mention", "name": name, "path": attachment.Path})
 	}
-	lines = append(lines, "", "请读取以上本机图片路径并结合图片内容回答。")
-	return strings.Join(lines, "\n")
+	return input
+}
+
+func asInterfaceSlice(value interface{}) []interface{} {
+	items, _ := value.([]interface{})
+	return items
+}
+
+func (b *Bridge) emitUserInput(input []map[string]interface{}) {
+	text := []string{}
+	attachments := []Attachment{}
+	for _, item := range input {
+		switch stringValue(item["type"]) {
+		case "text":
+			if value := strings.TrimSpace(stringValue(item["text"])); value != "" {
+				text = append(text, value)
+			}
+		case "localImage", "mention":
+			path := stringValue(item["path"])
+			if path != "" {
+				attachments = append(attachments, Attachment{Name: firstNonEmptyString(stringValue(item["name"]), filepath.Base(path)), Path: path})
+			}
+		}
+	}
+	b.emit("user.message", map[string]interface{}{"text": strings.Join(text, "\n"), "attachments": attachments})
 }
 
 func saveUpload(dataDir, name, mimeType, dataURL string) (Attachment, error) {
-	if !strings.HasPrefix(mimeType, "image/") {
-		return Attachment{}, errors.New("只支持图片附件")
-	}
 	comma := strings.Index(dataURL, ",")
 	if comma < 0 {
-		return Attachment{}, errors.New("图片数据格式不正确")
+		return Attachment{}, errors.New("文件数据格式不正确")
 	}
 	raw, err := base64.StdEncoding.DecodeString(dataURL[comma+1:])
 	if err != nil {
-		return Attachment{}, errors.New("图片数据无法解码")
+		return Attachment{}, errors.New("文件数据无法解码")
 	}
-	if len(raw) > 10*1024*1024 {
-		return Attachment{}, errors.New("单张图片不能超过 10MB")
+	if len(raw) == 0 || len(raw) > 16*1024*1024 {
+		return Attachment{}, errors.New("单个文件必须小于 16MB")
 	}
 	ext := extensionForMime(mimeType)
 	if ext == "" {
 		ext = strings.ToLower(filepath.Ext(name))
 	}
 	if ext == "" {
-		ext = ".png"
+		ext = ".bin"
 	}
 	id := randomID()
 	uploadDir := filepath.Join(dataDir, "uploads")

@@ -243,6 +243,51 @@ func TestWithModelOption(t *testing.T) {
 	}
 }
 
+func TestMessageInputKeepsNativeTextImageAndFileTypes(t *testing.T) {
+	input := messageInput("  请分析附件  ", []Attachment{
+		{Name: "截图.png", MimeType: "image/png", Path: `C:\tmp\截图.png`},
+		{Name: "说明.txt", MimeType: "text/plain", Path: `C:\tmp\说明.txt`},
+	})
+	if len(input) != 3 {
+		t.Fatalf("expected three native input items, got %#v", input)
+	}
+	if input[0]["type"] != "text" || input[0]["text"] != "请分析附件" {
+		t.Fatalf("unexpected text input: %#v", input[0])
+	}
+	if input[1]["type"] != "localImage" || input[1]["path"] != `C:\tmp\截图.png` {
+		t.Fatalf("image was not represented as localImage: %#v", input[1])
+	}
+	if input[2]["type"] != "mention" || input[2]["name"] != "说明.txt" || input[2]["path"] != `C:\tmp\说明.txt` {
+		t.Fatalf("file was not represented as mention: %#v", input[2])
+	}
+}
+
+func TestTurnCompletedOnlyClearsMatchingActiveTurn(t *testing.T) {
+	store := NewStore(t.TempDir())
+	bridge := &Bridge{
+		store:         store,
+		pending:       map[int64]pendingCall{},
+		session:       &Session{ID: "thread-a", Mode: "host-new-session", Status: "running"},
+		codexThreadID: "thread-a",
+		activeTurnID:  "turn-a",
+	}
+	bridge.mapCodexEvent("turn/completed", map[string]interface{}{"threadId": "thread-b"}, 0, false)
+	bridge.mu.Lock()
+	got := bridge.activeTurnID
+	bridge.mu.Unlock()
+	if got != "turn-a" {
+		t.Fatalf("an unrelated completion cleared the active turn: %q", got)
+	}
+
+	bridge.mapCodexEvent("turn/completed", map[string]interface{}{"threadId": "thread-a"}, 0, false)
+	bridge.mu.Lock()
+	got = bridge.activeTurnID
+	bridge.mu.Unlock()
+	if got != "" {
+		t.Fatalf("matching completion should clear the active turn, got %q", got)
+	}
+}
+
 func TestStoreKeepsSessionModelAndTokenUsageWhenThreadListOmitsMetadata(t *testing.T) {
 	store := NewStore(t.TempDir())
 	window := int64(114688)

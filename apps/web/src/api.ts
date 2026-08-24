@@ -40,6 +40,9 @@ export type RemoteEvent = {
     | "approval.resolved"
     | "turn.done"
     | "context.usage"
+    | "queue.changed"
+    | "goal.updated"
+    | "goal.cleared"
     | "error";
   ts: string;
   payload: Record<string, unknown>;
@@ -141,6 +144,27 @@ export type Attachment = {
   transport?: "relay" | "p2p";
 };
 
+export type QueuedInput = {
+  type: "text" | "localImage" | "mention" | string;
+  text?: string;
+  path?: string;
+  name?: string;
+  text_elements?: unknown[];
+};
+
+export type QueuedSubmission = {
+  id: string;
+  clientUserMessageId: string;
+  input: QueuedInput[];
+};
+
+export type ThreadGoal = {
+  threadId: string;
+  objective: string;
+  status: "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete";
+  tokenBudget?: number;
+};
+
 export async function getAuthStatus() {
   return request<AuthStatus>("/api/auth/status");
 }
@@ -239,7 +263,7 @@ export async function updateSettings(settings: AppSettings, deviceId?: string) {
   });
 }
 
-export async function uploadImage(name: string, mimeType: string, dataUrl: string) {
+export async function uploadAttachment(name: string, mimeType: string, dataUrl: string) {
   return request<{ attachment: Attachment }>("/api/uploads", {
     method: "POST",
     body: JSON.stringify({ name, mimeType, dataUrl })
@@ -293,6 +317,63 @@ export async function sendApproval(sessionId: string, approvalId: string, decisi
 
 export async function cancelTurn(sessionId: string) {
   return request(`/api/sessions/${sessionId}/cancel`, { method: "POST" });
+}
+
+export async function getQueue(sessionId: string) {
+  return request<{ queue: QueuedSubmission[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/queue`);
+}
+
+export async function addQueue(sessionId: string, text: string, attachments: Attachment[] = []) {
+  return request<{ queuedSubmission: QueuedSubmission }>(`/api/sessions/${encodeURIComponent(sessionId)}/queue`, {
+    method: "POST",
+    body: JSON.stringify({ operation: "add", text, attachments })
+  });
+}
+
+export async function updateQueue(sessionId: string, submissionId: string, input: QueuedInput[]) {
+  return request<{ queuedSubmission: QueuedSubmission }>(`/api/sessions/${encodeURIComponent(sessionId)}/queue`, {
+    method: "POST",
+    body: JSON.stringify({ operation: "update", submissionId, input })
+  });
+}
+
+export async function deleteQueue(sessionId: string, submissionId: string) {
+  return request<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/queue`, {
+    method: "POST",
+    body: JSON.stringify({ operation: "delete", submissionId })
+  });
+}
+
+export async function reorderQueue(sessionId: string, submissionIds: string[]) {
+  return request<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/queue`, {
+    method: "POST",
+    body: JSON.stringify({ operation: "reorder", submissionIds })
+  });
+}
+
+export async function promoteQueue(sessionId: string, submissionId: string) {
+  return request<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/queue`, {
+    method: "POST",
+    body: JSON.stringify({ operation: "promote", submissionId })
+  });
+}
+
+export async function getGoal(sessionId: string) {
+  return request<{ goal: ThreadGoal | null }>(`/api/sessions/${encodeURIComponent(sessionId)}/goal`);
+}
+
+export async function setGoal(sessionId: string, objective: string) {
+  return request<{ goal: ThreadGoal }>(`/api/sessions/${encodeURIComponent(sessionId)}/goal`, {
+    method: "POST",
+    body: JSON.stringify({ objective })
+  });
+}
+
+export async function clearGoal(sessionId: string) {
+  return request<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/goal`, {
+    method: "POST",
+    body: JSON.stringify({ clear: true })
+  });
 }
 
 export async function resumeThread(threadId: string) {
