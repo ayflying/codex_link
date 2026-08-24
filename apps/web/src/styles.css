@@ -794,6 +794,14 @@ button:disabled { cursor: not-allowed; opacity: 0.5; transform: none !important;
 .composer-model-menu-field select { width: 100%; min-width: 0; height: 32px; padding: 0 7px; border: 1px solid var(--line); border-radius: 5px; outline: 0; background: var(--surface); color: var(--ink-soft); font-size: 12px; font-weight: 700; cursor: pointer; }
 .composer-model-menu-field select:focus { border-color: var(--aqua); box-shadow: 0 0 0 2px var(--aqua-pale); }
 .composer-model-menu-field select:disabled { cursor: not-allowed; opacity: .48; }
+.slash-menu { position: absolute; z-index: 8; right: 9px; bottom: 58px; left: 9px; max-height: 304px; overflow-y: auto; padding: 8px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); box-shadow: 0 18px 42px rgba(15, 31, 47, .2); }
+.slash-menu-heading { display: flex; align-items: center; justify-content: space-between; padding: 4px 8px 7px; color: var(--muted); font-size: 11px; font-weight: 750; }
+.slash-menu-heading small { color: var(--aqua-dark); font-size: 10px; font-weight: 700; }
+.slash-option { min-width: 0; width: 100%; min-height: 36px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 6px 8px; border-radius: 5px; background: transparent; color: var(--ink-soft); text-align: left; cursor: pointer; }
+.slash-option:hover, .slash-option.selected { background: var(--surface-soft); color: var(--aqua-dark); }
+.slash-option-command { color: var(--ink); font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace; font-size: 12px; font-weight: 750; }
+.slash-option-description { min-width: 0; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.slash-option small { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .composer-menu-label { padding: 4px 8px 7px; color: var(--muted); font-size: 11px; font-weight: 750; }
 .composer-menu-item { min-width: 0; width: 100%; min-height: 36px; display: flex; align-items: center; gap: 9px; padding: 0 8px; border-radius: 5px; background: transparent; color: var(--ink-soft); text-align: left; cursor: pointer; }
 .composer-menu-item:hover, .composer-menu-item.active { background: var(--surface-soft); color: var(--aqua-dark); }
@@ -893,7 +901,7 @@ button:disabled { cursor: not-allowed; opacity: 0.5; transform: none !important;
   .queue-item { grid-template-columns: minmax(0, 1fr); }
   .queue-item-actions { justify-content: flex-start; }
   .queue-direction { margin-right: auto; }
-  .composer-menu, .composer-model-menu, .goal-editor { bottom: 60px; }
+  .composer-menu, .composer-model-menu, .slash-menu, .goal-editor { bottom: 60px; }
   .auth-shell { display: block; padding: 12px; }
   .auth-intro { min-height: auto; gap: 60px; margin-bottom: 12px; padding: 24px 22px; }
   .auth-intro::after { right: -100px; bottom: -80px; width: 220px; height: 220px; }

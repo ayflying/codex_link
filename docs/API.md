@@ -226,6 +226,10 @@ GET /api/p2p/ws?deviceId=<设备 ID>&clientId=<本次网页连接 ID>
 
 读取在线客户端通过 Codex app-server 暴露的可用模型目录。网页控制台在 P2P 直连时会改用 DataChannel 的 `models.list` 命令；模型选择会保存到客户端设置，并作用于新会话和后续消息。
 
+### GET `/api/skills`
+
+读取在线客户端本机 Codex 环境中的技能和插件清单。网页控制台在 P2P 直连时会改用 DataChannel 的 `skills.list` 命令；客户端只返回名称、说明、斜杠命令和类型，不返回本机路径。输入框输入 `/` 后可筛选并插入候选命令。
+
 ### GET `/api/sessions`
 
 读取服务端缓存的会话元数据，按 `updated_at` 倒序返回。可使用 `?deviceId=<设备 ID>` 筛选。

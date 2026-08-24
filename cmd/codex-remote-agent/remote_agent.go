@@ -345,6 +345,8 @@ func (a *remoteAgent) executeCommand(action string, payload json.RawMessage) (in
 			return nil, err
 		}
 		return map[string]interface{}{"models": models}, nil
+	case "skills.list":
+		return map[string]interface{}{"skills": discoverSkillOptions()}, nil
 	case "sessions.create":
 		var body struct {
 			Prompt string `json:"prompt"`

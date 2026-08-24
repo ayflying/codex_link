@@ -145,6 +145,13 @@ export type ModelOption = {
   supportedReasoningEfforts?: ReasoningEffortOption[];
 };
 
+export type SkillOption = {
+  name: string;
+  description?: string;
+  command: string;
+  kind: "skill" | "plugin";
+};
+
 export type Attachment = {
   id?: string;
   name?: string;
@@ -296,6 +303,10 @@ export async function getThreads(deviceId?: string) {
 
 export async function getModels(deviceId?: string) {
   return request<{ models: ModelOption[] }>(withDevice("/api/models", deviceId));
+}
+
+export async function getSkills(deviceId?: string) {
+  return request<{ skills: SkillOption[] }>(withDevice("/api/skills", deviceId));
 }
 
 export async function getDevices() {

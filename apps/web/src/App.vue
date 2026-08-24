@@ -69,6 +69,7 @@ import {
   getDevices,
   getHealth,
   getModels,
+  getSkills,
   getSessionHistory,
   getPortMappings,
   getSettings,
@@ -112,6 +113,7 @@ import {
   type RemoteDevice,
   type RemoteEvent,
   type SessionRecord,
+  type SkillOption,
   type ThreadGoal,
   type TokenUsage
 } from "./api";
@@ -187,11 +189,15 @@ const goalEditorOpen = ref(false);
 const goalDraft = ref("");
 const composerMenuOpen = ref(false);
 const modelMenuOpen = ref(false);
+const slashMenuOpen = ref(false);
+const slashSelectionIndex = ref(0);
 const composerBusy = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
+const composerTextarea = ref<HTMLTextAreaElement | null>(null);
 const defaultAppSettings: AppSettings = { approvalMode: "on-request", workMode: "edit", model: "", reasoningEffort: "" };
 const settings = ref<AppSettings>({ ...defaultAppSettings });
 const models = ref<ModelOption[]>([]);
+const skills = ref<SkillOption[]>([]);
 const devices = ref<RemoteDevice[]>([]);
 const activeDeviceId = ref("");
 const health = ref<unknown>(null);
@@ -261,6 +267,25 @@ const selectedModelLabel = computed(() => {
   const model = selectedModelOption.value;
   return model?.displayName || model?.model || "默认模型";
 });
+const slashToken = computed(() => {
+  const match = /(^|\s)\/([^\s/]*)$/.exec(draft.value);
+  if (!match) return null;
+  return {
+    start: match.index + match[1].length,
+    end: draft.value.length,
+    query: match[2].toLowerCase()
+  };
+});
+const slashSuggestions = computed(() => {
+  const token = slashToken.value;
+  if (!token) return [];
+  const filtered = skills.value.filter((skill) => {
+    const search = `${skill.command} ${skill.name} ${skill.description || ""}`.toLowerCase();
+    return search.includes(token.query);
+  });
+  return filtered.slice(0, 12);
+});
+const slashMenuVisible = computed(() => slashMenuOpen.value && slashSuggestions.value.length > 0 && canModifyActiveSession.value);
 const supportedReasoningEfforts = computed(() => selectedModelOption.value?.supportedReasoningEfforts || []);
 const groupedSessions = computed(() => {
   const groups = new Map<string, { cwd: string; label: string; sessions: SessionRecord[] }>();
@@ -365,6 +390,7 @@ watch(activeSessionId, (sessionId) => {
 	threadGoal.value = null;
 	composerMenuOpen.value = false;
 	modelMenuOpen.value = false;
+	slashMenuOpen.value = false;
 	goalEditorOpen.value = false;
 	if (sessionId && !activeSessionReadOnly.value) {
 		void loadQueue(sessionId);
@@ -413,7 +439,7 @@ async function refresh() {
       return;
     }
     const direct = await connectP2P(activeDeviceId.value);
-    const [sessionResult, settingsResult, modelResult] = await Promise.all([
+    const [sessionResult, settingsResult, modelResult, skillResult] = await Promise.all([
       direct
         ? p2p.request<{ sessions: SessionRecord[] }>("threads.list", {})
         : getThreads(activeDeviceId.value),
@@ -422,11 +448,15 @@ async function refresh() {
         : getSettings(activeDeviceId.value),
       (direct
         ? p2p.request<{ models: ModelOption[] }>("models.list", {})
-        : getModels(activeDeviceId.value)).catch(() => ({ models: [] }))
+        : getModels(activeDeviceId.value)).catch(() => ({ models: [] })),
+      (direct
+        ? p2p.request<{ skills: SkillOption[] }>("skills.list", {})
+        : getSkills(activeDeviceId.value)).catch(() => ({ skills: [] }))
     ]);
     sessions.value = sessionResult.sessions;
     settings.value = { ...defaultAppSettings, ...settingsResult };
     models.value = modelResult.models;
+    skills.value = skillResult.skills;
     collapseProjectsByDefault();
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : String(reason);
@@ -1284,10 +1314,57 @@ async function saveSettings(next: Partial<AppSettings>) {
   }
 }
 
+function handleComposerInput() {
+  const visible = slashToken.value !== null;
+  slashMenuOpen.value = visible;
+  if (visible) {
+    slashSelectionIndex.value = 0;
+    composerMenuOpen.value = false;
+    modelMenuOpen.value = false;
+  }
+}
+
 function handleComposerKeydown(event: KeyboardEvent) {
+  if (slashMenuVisible.value) {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      slashSelectionIndex.value = (slashSelectionIndex.value + 1) % slashSuggestions.value.length;
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      slashSelectionIndex.value = (slashSelectionIndex.value - 1 + slashSuggestions.value.length) % slashSuggestions.value.length;
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      slashMenuOpen.value = false;
+      return;
+    }
+    if ((event.key === "Enter" || event.key === "Tab") && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      insertSlashSuggestion(slashSuggestions.value[slashSelectionIndex.value]);
+      return;
+    }
+  }
   if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
   event.preventDefault();
   void submitMessage();
+}
+
+function insertSlashSuggestion(option?: SkillOption) {
+  const token = slashToken.value;
+  if (!token || !option) return;
+  const insertion = `${option.command} `;
+  draft.value = `${draft.value.slice(0, token.start)}${insertion}${draft.value.slice(token.end)}`;
+  slashMenuOpen.value = false;
+  nextTick(() => {
+    const textarea = composerTextarea.value;
+    if (!textarea) return;
+    const cursor = token.start + insertion.length;
+    textarea.focus();
+    textarea.setSelectionRange(cursor, cursor);
+  });
 }
 
 function selectModel(event: Event) {
@@ -2695,12 +2772,31 @@ function transportLabel(status: typeof transportState.value) {
               </button>
             </figure>
           </div>
+          <div v-if="slashMenuVisible" class="slash-menu" role="listbox" aria-label="技能和插件候选">
+            <div class="slash-menu-heading"><span>斜杠命令</span><small>技能与插件</small></div>
+            <button
+              v-for="(skill, index) in slashSuggestions"
+              :key="`${skill.kind}:${skill.command}`"
+              class="slash-option"
+              :class="{ selected: index === slashSelectionIndex }"
+              type="button"
+              role="option"
+              :aria-selected="index === slashSelectionIndex"
+              @mousedown.prevent="insertSlashSuggestion(skill)"
+            >
+              <span class="slash-option-command">{{ skill.command }}</span>
+              <span class="slash-option-description">{{ skill.description || (skill.kind === "plugin" ? "插件" : "技能") }}</span>
+              <small>{{ skill.kind === "plugin" ? "插件" : "技能" }}</small>
+            </button>
+          </div>
           <div class="composer-entry">
             <textarea
+              ref="composerTextarea"
               v-model="draft"
               rows="3"
               :disabled="!canModifyActiveSession"
               :placeholder="activeSessionReadOnly ? '该对话正在被本机 Codex 使用，仅可查看历史' : '随心输入'"
+              @input="handleComposerInput"
               @keydown="handleComposerKeydown"
             />
             <div class="composer-toolbar">
