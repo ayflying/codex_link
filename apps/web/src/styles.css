@@ -27,7 +27,6 @@
   --coral-pale: #fff0ed;
   --shadow: 0 12px 30px rgba(31, 54, 76, 0.08);
   --shadow-strong: 0 20px 48px rgba(16, 32, 51, 0.16);
-  --chat-reading-width: 780px;
   --chat-user: #e8edf2;
   --chat-user-line: #d4dde6;
   --chat-composer: #f5f7f9;
@@ -618,7 +617,7 @@ button:disabled { cursor: not-allowed; opacity: 0.5; transform: none !important;
 }
 
 .content { min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 8px; overflow: hidden; }
-.status-band { width: min(100%, var(--chat-reading-width)); display: flex; align-items: center; gap: 0; margin-inline: auto; overflow-x: auto; padding: 2px 0; scrollbar-width: none; }
+.status-band { width: 100%; display: flex; align-items: center; gap: 0; overflow-x: auto; padding: 2px 18px; scrollbar-width: none; }
 .status-band::-webkit-scrollbar { display: none; }
 .status-item, .segmented-control, .select-control { min-height: 28px; display: inline-flex; align-items: center; flex: 0 0 auto; border: 0; border-radius: 0; background: transparent; color: var(--muted); box-shadow: none; }
 .status-item { gap: 6px; padding: 0 9px; border-right: 1px solid var(--line); font-size: 11px; white-space: nowrap; }
@@ -641,17 +640,18 @@ button:disabled { cursor: not-allowed; opacity: 0.5; transform: none !important;
 .new-session input { min-width: 0; flex: 1; }
 .new-session .primary { min-width: 102px; }
 
-.transcript { min-width: 0; min-height: 0; max-height: none; overflow-y: auto; display: flex; flex-direction: column; gap: 0; padding: 20px max(18px, calc((100% - var(--chat-reading-width)) / 2)) 28px; scroll-padding-top: 36px; }
+.conversation { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
+.transcript { min-width: 0; min-height: 0; max-height: none; overflow-y: auto; display: flex; flex-direction: column; gap: 0; padding: 10px 18px 28px; scroll-padding-top: 36px; }
 .event-block, .empty-state { border: 0; border-radius: 0; background: transparent; }
 .event-block { min-width: 0; padding: 12px 0; box-shadow: none; }
-.session-summary { display: flex; justify-content: space-between; gap: 14px; margin: 2px 0 18px; padding: 0 0 17px; border-bottom: 1px solid var(--line); }
+.session-summary { display: flex; justify-content: space-between; gap: 14px; margin: 0; padding: 8px 18px 17px; border-bottom: 1px solid var(--line); background: var(--canvas); }
 .session-summary strong { color: var(--ink); font-size: 16px; font-weight: 680; }
 .session-summary p { margin: 5px 0 0; color: var(--muted); font-size: 12px; word-break: break-all; }
 .session-summary > span { align-self: flex-start; color: var(--muted); font-size: 11px; font-weight: 650; white-space: nowrap; }
 .timeline-event { display: grid; gap: 7px; }
 .assistant-delta { padding: 12px 0 24px; }
 .assistant-delta .event-meta, .user-message .event-meta { display: none; }
-.user-message { align-self: flex-end; width: fit-content; max-width: min(86%, 620px); margin: 10px 0 24px; padding: 10px 14px; border: 1px solid var(--chat-user-line); border-radius: 14px; background: var(--chat-user); }
+.user-message { align-self: flex-end; width: fit-content; max-width: 86%; margin: 10px 0 24px; padding: 10px 14px; border: 1px solid var(--chat-user-line); border-radius: 14px; background: var(--chat-user); }
 .approval-requested.pending { margin: 10px 0 20px; padding: 14px; border: 1px solid color-mix(in srgb, var(--amber) 42%, var(--line)); border-radius: 8px; background: var(--amber-pale); box-shadow: none; }
 .approval-actions { display: flex; gap: 8px; margin-top: 12px; }
 .tool-started, .tool-output { padding: 7px 0; }
@@ -660,6 +660,7 @@ button:disabled { cursor: not-allowed; opacity: 0.5; transform: none !important;
 .tool-started .markdown-body, .tool-output .markdown-body { color: var(--muted); font-size: 12px; line-height: 1.6; }
 .tool-output .markdown-body { padding-left: 20px; }
 .error { margin: 10px 0 20px; }
+.history-load-sentinel { width: 100%; height: 1px; flex: 0 0 1px; pointer-events: none; }
 .event-meta { display: flex; align-items: center; gap: 8px; color: var(--muted); }
 .event-meta time, .event-meta span { color: var(--muted); font-size: 11px; }
 .event-meta span { color: var(--ink-soft); font-weight: 650; }
@@ -685,7 +686,7 @@ button:disabled { cursor: not-allowed; opacity: 0.5; transform: none !important;
 .empty-state svg { color: var(--aqua); }
 .empty-state p { max-width: 360px; margin: 0; font-size: 13px; }
 
-.composer { position: relative; display: block; width: min(100%, var(--chat-reading-width)); min-width: 0; margin-inline: auto; overflow: visible; padding: 9px; border: 1px solid var(--chat-trace-line); border-radius: 16px; background: var(--chat-composer); box-shadow: none; transition: border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease; }
+.composer { position: relative; display: block; width: 100%; min-width: 0; overflow: visible; padding: 9px; border: 1px solid var(--chat-trace-line); border-radius: 16px; background: var(--chat-composer); box-shadow: none; transition: border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease; }
 .composer:focus-within { border-color: color-mix(in srgb, var(--aqua) 68%, var(--chat-trace-line)); box-shadow: 0 0 0 3px rgba(26, 169, 157, 0.11); }
 .composer.drop-active { border-color: var(--aqua); background: var(--aqua-pale); }
 .composer-drop-hint { position: absolute; z-index: 8; inset: 7px; display: flex; align-items: center; justify-content: center; gap: 9px; border: 1px dashed var(--aqua); border-radius: 13px; background: color-mix(in srgb, var(--surface) 88%, var(--aqua)); color: var(--aqua-dark); font-size: 13px; font-weight: 700; pointer-events: none; }
@@ -819,7 +820,9 @@ button:disabled { cursor: not-allowed; opacity: 0.5; transform: none !important;
   .status-band { padding-bottom: 2px; scrollbar-width: none; }
   .status-band::-webkit-scrollbar { display: none; }
   .status-item { padding-inline: 10px; }
-  .transcript { min-height: 0; max-height: none; padding-right: 1px; }
+  .status-band { padding-inline: 10px; }
+  .session-summary { padding-inline: 10px; }
+  .transcript { min-height: 0; max-height: none; padding: 10px 10px 18px; }
   .composer { min-width: 0; padding: 7px; border-radius: 15px; }
   .composer-entry { grid-template-rows: minmax(96px, auto) auto; }
   .composer-entry textarea { min-width: 0; min-height: 96px; }

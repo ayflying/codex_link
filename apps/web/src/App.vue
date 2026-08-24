@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   ArrowLeft,
   ArrowDown,
@@ -153,6 +153,7 @@ const eventSource = ref<EventSource | null>(null);
 const streamState = ref<"idle" | "connected" | "reconnecting">("idle");
 const transportState = ref<"idle" | "connecting" | "p2p" | "relay" | "failed">("idle");
 const transcriptEl = ref<HTMLElement | null>(null);
+const historySentinelEl = ref<HTMLElement | null>(null);
 const sessionListEl = ref<HTMLElement | null>(null);
 const renderLimit = ref(160);
 const forceScrollToBottom = ref(false);
@@ -171,6 +172,8 @@ const dragOverKey = ref("");
 const historyLoading = ref(false);
 const historyHasMore = ref(false);
 const pendingRemoteEvents = new Map<string, RemoteEvent>();
+let historyObserver: IntersectionObserver | null = null;
+let historyScrollArmed = false;
 
 const projectOrderStorageKey = "codex-link-project-order";
 const recentOrderStorageKey = "codex-link-recent-order";
@@ -279,6 +282,11 @@ onMounted(async () => {
   applyTheme();
   await checkAuth();
   if (auth.value.authenticated) await refresh();
+});
+
+onBeforeUnmount(() => {
+  historyObserver?.disconnect();
+  historyObserver = null;
 });
 
 watch(theme, () => {
@@ -1404,6 +1412,21 @@ async function loadEventPage(sessionId: string, before: number, replace = false)
   }
 }
 
+async function observeHistorySentinel() {
+  await nextTick();
+  historyObserver?.disconnect();
+  historyObserver = null;
+  if (!hasEarlierEvents.value || !transcriptEl.value || !historySentinelEl.value || !("IntersectionObserver" in window)) return;
+  historyObserver = new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) void loadOlderEvents();
+  }, {
+    root: transcriptEl.value,
+    rootMargin: "160px 0px 0px",
+    threshold: 0
+  });
+  historyObserver.observe(historySentinelEl.value);
+}
+
 async function loadOlderEvents() {
   if (!activeSession.value || historyLoading.value || !hasEarlierEvents.value) return;
   const element = transcriptEl.value;
@@ -1413,6 +1436,7 @@ async function loadOlderEvents() {
     renderLimit.value += listPageSize;
     await nextTick();
     if (element) element.scrollTop = previousTop + element.scrollHeight - previousHeight;
+    void observeHistorySentinel();
     return;
   }
   const oldest = [...events.value].sort((a, b) => a.id - b.id)[0]?.id || 0;
@@ -1424,11 +1448,15 @@ async function loadOlderEvents() {
   if (!loaded || !element) return;
   await nextTick();
   element.scrollTop = previousTop + element.scrollHeight - previousHeight;
+  void observeHistorySentinel();
 }
 
 function connectEvents(sessionId: string, reset = true) {
   eventSource.value?.close();
   if (reset) {
+    historyObserver?.disconnect();
+    historyObserver = null;
+    historyScrollArmed = false;
     events.value = [];
     renderLimit.value = listPageSize;
     historyHasMore.value = false;
@@ -1637,9 +1665,15 @@ function onSidebarScroll(event: Event) {
   loadSidebarAtViewport(event.currentTarget as HTMLElement);
 }
 
+function armHistoryLoad() {
+  historyScrollArmed = true;
+}
+
 function onTranscriptScroll() {
   const element = transcriptEl.value;
-  if (element && element.scrollTop <= 64) void loadOlderEvents();
+  if (!historyScrollArmed || historyObserver || !element || element.scrollTop > 160) return;
+  historyScrollArmed = false;
+  void loadOlderEvents();
 }
 
 function toggleProject(cwd: string) {
@@ -2406,16 +2440,18 @@ function transportLabel(status: typeof transportState.value) {
           </div>
         </section>
 
-        <section v-if="activeSession" ref="transcriptEl" class="transcript" @scroll.passive="onTranscriptScroll">
-      <article class="event-block session-summary">
-        <div>
-          <strong>{{ activeSession.title }}</strong>
-          <p>{{ activeSession.note || activeSession.cwd || "Host workspace" }}</p>
-        </div>
-        <span>{{ statusLabel(activeSession.status) }}</span>
-      </article>
+        <section v-if="activeSession" class="conversation">
+          <article class="event-block session-summary">
+            <div>
+              <strong>{{ activeSession.title }}</strong>
+              <p>{{ activeSession.note || activeSession.cwd || "Host workspace" }}</p>
+            </div>
+            <span>{{ statusLabel(activeSession.status) }}</span>
+          </article>
 
-      <article
+          <section ref="transcriptEl" class="transcript" tabindex="0" @wheel.passive="armHistoryLoad" @touchstart.passive="armHistoryLoad" @pointerdown.passive="armHistoryLoad" @scroll.passive="onTranscriptScroll">
+            <div v-if="hasEarlierEvents" ref="historySentinelEl" class="history-load-sentinel" :aria-busy="historyLoading" aria-live="polite" />
+            <article
         v-for="event in visibleEvents"
         :key="event.id"
         class="event-block timeline-event"
@@ -2436,7 +2472,8 @@ function transportLabel(status: typeof transportState.value) {
             <span>拒绝</span>
           </button>
         </div>
-      </article>
+            </article>
+          </section>
         </section>
 
         <section v-else class="empty-state">
