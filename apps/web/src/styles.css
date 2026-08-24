@@ -492,10 +492,18 @@ button:disabled { cursor: not-allowed; opacity: 0.5; transform: none !important;
 .port-form-heading p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .port-form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .port-form-grid .field-label { display: grid; gap: 6px; }
-.port-form-grid .field-label small { color: var(--muted); font-size: 11px; line-height: 1.45; }
+.field-label-heading { min-height: 18px; display: flex; align-items: center; gap: 4px; }
+.field-label-heading label { color: inherit; }
+.field-help { width: 18px; height: 18px; display: inline-grid; flex: 0 0 18px; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; }
+.field-help:hover, .field-help[aria-expanded="true"] { background: var(--aqua-pale); color: var(--aqua-dark); }
+.field-help:focus-visible { outline: 2px solid var(--aqua); outline-offset: 2px; }
+.port-form-grid .field-tip { margin: 0; padding: 7px 8px; border-left: 2px solid var(--aqua); background: var(--surface); color: var(--ink-soft); font-size: 11px; font-weight: 500; line-height: 1.5; }
+.port-form-grid .field-tip code { font-size: inherit; }
 .port-form-grid input, .port-form-grid select { min-width: 0; width: 100%; min-height: 38px; padding: 0 10px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--ink-soft); outline: 0; }
 .port-form-grid input:focus, .port-form-grid select:focus { border-color: var(--aqua); box-shadow: 0 0 0 3px rgba(26, 169, 157, 0.12); }
-.port-enabled { align-self: end; min-height: 38px; display: inline-flex; align-items: center; gap: 8px; color: var(--ink-soft); font-size: 13px; }
+.port-enabled { align-self: end; min-height: 38px; display: grid; grid-template-columns: auto auto; justify-content: start; align-items: center; column-gap: 5px; color: var(--ink-soft); font-size: 13px; }
+.port-enabled label { display: inline-flex; align-items: center; gap: 8px; }
+.port-enabled .field-tip { grid-column: 1 / -1; margin-top: 6px; }
 .port-enabled input { width: 16px; height: 16px; accent-color: var(--aqua); }
 .port-form-actions { display: flex; gap: 8px; }
 .port-mapping-table { overflow: hidden; border: 1px solid var(--line); border-radius: 7px; }

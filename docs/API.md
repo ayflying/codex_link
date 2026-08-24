@@ -100,7 +100,7 @@ Invoke-RestMethod "$base/api/devices" -Headers $headers
 
 ### 端口映射
 
-每个登录用户都可以管理属于自己设备的端口映射，当前协议固定为 TCP。服务端监听 `listenPort`，每个连接都会单独与目标设备建立 WebRTC DataChannel，再连接客户端本机的 `targetHost:targetPort`。P2P 打洞失败会关闭该 TCP 连接，绝不会回退到 agent WebSocket 或 HTTP relay。
+每个登录用户都可以管理属于自己设备的端口映射，当前协议固定为 TCP。服务端监听 `listenPort`，每个连接都会单独与目标设备建立 WebRTC DataChannel，再由该设备连接 `targetHost:targetPort`。`targetHost` 可为设备本机的 `127.0.0.1`，也可为该设备可访问的局域网 IP 或主机名。P2P 打洞失败会关闭该 TCP 连接，绝不会回退到 agent WebSocket 或 HTTP relay。
 
 ```text
 GET    /api/port-mappings

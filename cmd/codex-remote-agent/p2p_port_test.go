@@ -9,6 +9,12 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
+func TestValidateP2PPortInitAllowsLANHost(t *testing.T) {
+	if err := validateP2PPortInit(p2pPortInit{Type: "port-map-init", TargetHost: "192.168.50.42", TargetPort: 5000}); err != nil {
+		t.Fatalf("LAN target rejected: %v", err)
+	}
+}
+
 func TestP2PPortSessionForwardsTCPBothDirections(t *testing.T) {
 	targetListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

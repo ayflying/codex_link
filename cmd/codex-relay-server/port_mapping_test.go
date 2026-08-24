@@ -7,6 +7,10 @@ func TestValidatePortMappingInput(t *testing.T) {
 	if err := validatePortMappingInput(valid); err != nil {
 		t.Fatalf("valid mapping rejected: %v", err)
 	}
+	lanTarget := portMappingInput{DeviceID: "device", Name: "办公室 NAS", TargetHost: "192.168.50.42", TargetPort: 5000, ListenPort: 19023, Protocol: "tcp"}
+	if err := validatePortMappingInput(lanTarget); err != nil {
+		t.Fatalf("LAN target rejected: %v", err)
+	}
 	for _, test := range []struct {
 		name  string
 		input portMappingInput
