@@ -10,6 +10,9 @@ import {
   Copy,
   Cpu,
   Gauge,
+  GripVertical,
+  Folder,
+  Clock3,
   ImagePlus,
   KeyRound,
   Menu,
@@ -27,6 +30,8 @@ import {
   User,
   Users,
   LogOut,
+  Moon,
+  Sun,
   X
 } from "@lucide/vue";
 import {
@@ -121,7 +126,16 @@ const renderLimit = ref(160);
 const forceScrollToBottom = ref(false);
 const sidebarOpen = ref(false);
 const collapsedProjects = ref<Set<string>>(new Set());
+const projectOrder = ref<string[]>([]);
+const recentOrder = ref<string[]>([]);
+const theme = ref<"light" | "dark">("dark");
+const composerDropActive = ref(false);
+const dragState = ref<{ kind: "project" | "recent"; id: string } | null>(null);
+const dragOverKey = ref("");
 const pendingRemoteEvents = new Map<string, RemoteEvent>();
+
+const projectOrderStorageKey = "codex-link-project-order";
+const recentOrderStorageKey = "codex-link-recent-order";
 
 const p2p = new P2PTransport({
   onEvent: (event) => acceptRemoteEvent(event),
@@ -144,15 +158,21 @@ const activeDevice = computed(() => devices.value.find((device) => device.id ===
 const groupedSessions = computed(() => {
   const groups = new Map<string, { cwd: string; label: string; sessions: SessionRecord[] }>();
   for (const session of sessions.value) {
-    const cwd = session.cwd || "未知项目";
+    if (!session.cwd) continue;
+    const cwd = session.cwd;
     if (!groups.has(cwd)) groups.set(cwd, { cwd, label: projectLabel(cwd), sessions: [] });
     groups.get(cwd)!.sessions.push(session);
   }
-  return [...groups.values()];
+  return applyStoredOrder([...groups.values()], projectOrder.value, (group) => group.cwd);
 });
+const recentSessions = computed(() => {
+  const recent = sessions.value.filter((session) => !session.cwd);
+  return applyStoredOrder(recent, recentOrder.value, (session) => session.id);
+});
+const orderedSessionCount = computed(() => groupedSessions.value.reduce((total, group) => total + group.sessions.length, 0) + recentSessions.value.length);
 const activeProjectCwd = computed(() => activeSession.value?.cwd || "");
 const visibleSessionCount = computed(() =>
-  groupedSessions.value.reduce((total, group) => total + (isProjectCollapsed(group.cwd) ? 0 : group.sessions.length), 0)
+  groupedSessions.value.reduce((total, group) => total + (isProjectCollapsed(group.cwd) ? 0 : group.sessions.length), 0) + recentSessions.value.length
 );
 const pendingApprovals = computed(() => {
   const resolved = new Set(
@@ -195,8 +215,14 @@ const hiddenEventCount = computed(() => Math.max(0, displayEvents.value.length -
 const visibleEvents = computed(() => displayEvents.value.slice(-renderLimit.value));
 
 onMounted(async () => {
+  loadSidebarPreferences();
+  applyTheme();
   await checkAuth();
   if (auth.value.authenticated) await refresh();
+});
+
+watch(theme, () => {
+  applyTheme();
 });
 
 watch(activeSessionId, (sessionId) => {
@@ -682,6 +708,104 @@ async function copyToken(token: string) {
   }
 }
 
+function loadSidebarPreferences() {
+  try {
+    const storedProjects = JSON.parse(localStorage.getItem(projectOrderStorageKey) || "[]");
+    const storedRecent = JSON.parse(localStorage.getItem(recentOrderStorageKey) || "[]");
+    if (Array.isArray(storedProjects)) projectOrder.value = storedProjects.filter((item): item is string => typeof item === "string");
+    if (Array.isArray(storedRecent)) recentOrder.value = storedRecent.filter((item): item is string => typeof item === "string");
+    const storedTheme = localStorage.getItem("codex-link-theme");
+    if (storedTheme === "light" || storedTheme === "dark") theme.value = storedTheme;
+  } catch {
+    projectOrder.value = [];
+    recentOrder.value = [];
+  }
+}
+
+function applyTheme() {
+  document.documentElement.dataset.theme = theme.value;
+  try {
+    localStorage.setItem("codex-link-theme", theme.value);
+  } catch {
+    // Private browsing can make localStorage unavailable.
+  }
+}
+
+function toggleTheme() {
+  theme.value = theme.value === "dark" ? "light" : "dark";
+}
+
+function applyStoredOrder<T>(items: T[], order: string[], key: (item: T) => string) {
+  const positions = new Map(order.map((id, index) => [id, index]));
+  return items
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => {
+      const aPosition = positions.get(key(a.item)) ?? order.length + a.index;
+      const bPosition = positions.get(key(b.item)) ?? order.length + b.index;
+      return aPosition - bPosition;
+    })
+    .map(({ item }) => item);
+}
+
+function moveItem<T>(items: T[], source: string, target: string, key: (item: T) => string) {
+  const ids = items.map(key);
+  const sourceIndex = ids.indexOf(source);
+  const targetIndex = ids.indexOf(target);
+  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return ids;
+  const next = [...ids];
+  const [moved] = next.splice(sourceIndex, 1);
+  next.splice(next.indexOf(target), 0, moved);
+  return next;
+}
+
+function dragKey(kind: "project" | "recent", id: string) {
+  return `${kind}:${id}`;
+}
+
+function beginDrag(event: DragEvent, kind: "project" | "recent", id: string) {
+  if (!event.dataTransfer) return;
+  dragState.value = { kind, id };
+  dragOverKey.value = "";
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", `${kind}:${id}`);
+}
+
+function trackDragOver(event: DragEvent, kind: "project" | "recent", id: string) {
+  if (!dragState.value || dragState.value.kind !== kind || dragState.value.id === id) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  dragOverKey.value = dragKey(kind, id);
+}
+
+function finishDrop(kind: "project" | "recent", target: string) {
+  const source = dragState.value;
+  if (!source || source.kind !== kind || source.id === target) {
+    endDrag();
+    return;
+  }
+  if (kind === "project") {
+    projectOrder.value = moveItem(groupedSessions.value, source.id, target, (group) => group.cwd);
+    try {
+      localStorage.setItem(projectOrderStorageKey, JSON.stringify(projectOrder.value));
+    } catch {
+      // The order remains active for this page even when storage is unavailable.
+    }
+  } else {
+    recentOrder.value = moveItem(recentSessions.value, source.id, target, (session) => session.id);
+    try {
+      localStorage.setItem(recentOrderStorageKey, JSON.stringify(recentOrder.value));
+    } catch {
+      // The order remains active for this page even when storage is unavailable.
+    }
+  }
+  endDrag();
+}
+
+function endDrag() {
+  dragState.value = null;
+  dragOverKey.value = "";
+}
+
 async function startSession() {
   loading.value = true;
   error.value = "";
@@ -791,7 +915,7 @@ async function saveSettings(next: Partial<AppSettings>) {
 }
 
 function handleComposerKeydown(event: KeyboardEvent) {
-  if (event.key !== "Enter" || (!event.ctrlKey && !event.metaKey)) return;
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
   event.preventDefault();
   void submitMessage();
 }
@@ -801,22 +925,48 @@ function selectModel(event: Event) {
   void saveSettings({ model });
 }
 
+async function addImageFiles(files: File[]) {
+  try {
+    for (const file of files) await addImageFile(file);
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason);
+  }
+}
+
 async function handlePaste(event: ClipboardEvent) {
   const items = Array.from(event.clipboardData?.items || []);
   const imageItems = items.filter((item) => item.type.startsWith("image/"));
   if (imageItems.length === 0) return;
   event.preventDefault();
-  for (const item of imageItems) {
-    const file = item.getAsFile();
-    if (file) await addImageFile(file);
-  }
+  await addImageFiles(imageItems.map((item) => item.getAsFile()).filter((file): file is File => Boolean(file)));
 }
 
 async function handleFilePicked(event: Event) {
   const input = event.target as HTMLInputElement;
   const files = Array.from(input.files || []);
-  for (const file of files) await addImageFile(file);
+  await addImageFiles(files);
   input.value = "";
+}
+
+function handleComposerDragOver(event: DragEvent) {
+  const types = Array.from(event.dataTransfer?.types || []);
+  if (!types.includes("Files")) return;
+  event.preventDefault();
+  composerDropActive.value = true;
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+}
+
+function handleComposerDragLeave(event: DragEvent) {
+  const current = event.currentTarget as HTMLElement;
+  const related = event.relatedTarget as Node | null;
+  if (!related || !current.contains(related)) composerDropActive.value = false;
+}
+
+async function handleComposerDrop(event: DragEvent) {
+  event.preventDefault();
+  composerDropActive.value = false;
+  const files = Array.from(event.dataTransfer?.files || []).filter((file) => file.type.startsWith("image/"));
+  await addImageFiles(files);
 }
 
 async function addImageFile(file: File) {
@@ -1047,8 +1197,7 @@ function expandAllProjects() {
 }
 
 function collapseProjectsByDefault() {
-  const cwdList = sessions.value.map((session) => session.cwd || "未知项目");
-  collapsedProjects.value = new Set(cwdList);
+  collapsedProjects.value = new Set(groupedSessions.value.map((group) => group.cwd));
 }
 
 function collapseOtherProjects() {
@@ -1649,8 +1798,15 @@ function transportLabel(status: typeof transportState.value) {
       <button v-if="sidebarOpen" class="sidebar-backdrop" type="button" aria-label="关闭对话列表" @click="sidebarOpen = false" />
       <aside class="sidebar">
         <div class="sidebar-heading">
-          <strong>对话</strong>
+          <div class="sidebar-heading-label">
+            <strong>工作区</strong>
+            <small>{{ orderedSessionCount }} 个对话</small>
+          </div>
           <div class="sidebar-actions">
+            <button class="icon-button compact" type="button" :title="theme === 'dark' ? '切换浅色主题' : '切换黑色主题'" @click="toggleTheme">
+              <Sun v-if="theme === 'dark'" :size="16" />
+              <Moon v-else :size="16" />
+            </button>
             <button class="icon-button compact" type="button" title="刷新对话列表" @click="refresh">
               <RefreshCw :size="16" />
             </button>
@@ -1659,45 +1815,111 @@ function transportLabel(status: typeof transportState.value) {
             </button>
           </div>
         </div>
+        <form class="sidebar-new-session" @submit.prevent="startSession">
+          <input v-model="firstPrompt" type="text" placeholder="新任务第一句话" aria-label="新任务第一句话" />
+          <button class="primary icon-text" type="submit" aria-label="新对话" title="新对话" :disabled="loading">
+            <MessageSquarePlus :size="17" />
+            <span>新对话</span>
+          </button>
+        </form>
         <div class="project-tools">
           <button type="button" @click="expandAllProjects">展开全部</button>
           <button type="button" @click="collapseOtherProjects">折叠其它</button>
           <span>{{ visibleSessionCount }} / {{ sessions.length }}</span>
         </div>
         <div class="session-list" aria-label="Sessions">
-          <section v-for="group in groupedSessions" :key="group.cwd" class="session-project-group">
-            <button
-              class="project-heading"
-              type="button"
-              :title="group.cwd"
-              :aria-expanded="!isProjectCollapsed(group.cwd)"
-              @click="toggleProject(group.cwd)"
-            >
-              <ChevronRight v-if="isProjectCollapsed(group.cwd)" :size="16" />
-              <ChevronDown v-else :size="16" />
-              <span>{{ group.label }}</span>
-              <small>{{ group.sessions.length }} 条</small>
-            </button>
-            <article
-              v-for="session in group.sessions"
-              v-show="!isProjectCollapsed(group.cwd)"
-              :key="session.id"
-              :data-session-id="session.id"
-              class="session-pill"
-              :class="{ active: session.id === activeSessionId }"
-            >
-              <button class="session-open" type="button" :disabled="loading" @click="openThread(session)">
-                <span class="session-title">{{ session.title }}</span>
-                <span class="session-columns">
-                  <small>项目：{{ projectLabel(session.cwd || "") }}</small>
-                  <small>状态：{{ statusLabel(session.status) }}</small>
-                  <small>更新：{{ formatShortDate(session.updatedAt) }}</small>
-                </span>
-              </button>
-              <button class="delete-thread" type="button" title="删除对话" @click="removeThread(session)">
-                <Trash2 :size="15" />
-              </button>
-            </article>
+          <section class="sidebar-section">
+            <div class="sidebar-section-heading">
+              <span><Folder :size="15" />项目</span>
+              <small>{{ groupedSessions.length }}</small>
+            </div>
+            <div class="project-list">
+              <section
+                v-for="group in groupedSessions"
+                :key="group.cwd"
+                class="session-project-group"
+                :class="{ 'drag-over': dragOverKey === dragKey('project', group.cwd) }"
+                @dragover="trackDragOver($event, 'project', group.cwd)"
+                @drop.prevent="finishDrop('project', group.cwd)"
+              >
+                <div class="project-heading-row">
+                  <button
+                    class="project-heading"
+                    type="button"
+                    :title="group.cwd"
+                    :aria-expanded="!isProjectCollapsed(group.cwd)"
+                    @click="toggleProject(group.cwd)"
+                  >
+                    <ChevronRight v-if="isProjectCollapsed(group.cwd)" :size="16" />
+                    <ChevronDown v-else :size="16" />
+                    <span>{{ group.label }}</span>
+                    <small>{{ group.sessions.length }} 条</small>
+                  </button>
+                  <span
+                    class="drag-handle project-drag-handle"
+                    draggable="true"
+                    title="拖动项目排序"
+                    @dragstart="beginDrag($event, 'project', group.cwd)"
+                    @dragend="endDrag"
+                  ><GripVertical :size="15" /></span>
+                </div>
+                <article
+                  v-for="session in group.sessions"
+                  v-show="!isProjectCollapsed(group.cwd)"
+                  :key="session.id"
+                  :data-session-id="session.id"
+                  class="session-pill"
+                  :class="{ active: session.id === activeSessionId }"
+                >
+                  <button class="session-open" type="button" :disabled="loading" @click="openThread(session)">
+                    <span class="session-title">{{ session.title }}</span>
+                    <span class="session-columns">
+                      <small>项目：{{ projectLabel(session.cwd || "") }}</small>
+                      <small>状态：{{ statusLabel(session.status) }}</small>
+                      <small>更新：{{ formatShortDate(session.updatedAt) }}</small>
+                    </span>
+                  </button>
+                  <button class="delete-thread" type="button" title="删除对话" @click="removeThread(session)">
+                    <Trash2 :size="15" />
+                  </button>
+                </article>
+              </section>
+            </div>
+            <div v-if="!groupedSessions.length" class="sidebar-empty">还没有项目对话</div>
+          </section>
+
+          <section class="sidebar-section recent-section">
+            <div class="sidebar-section-heading">
+              <span><Clock3 :size="15" />最近对话</span>
+              <small>{{ recentSessions.length }}</small>
+            </div>
+            <div class="recent-list">
+              <article
+                v-for="session in recentSessions"
+                :key="session.id"
+                :data-session-id="session.id"
+                class="session-pill recent-session-pill"
+                :class="{ active: session.id === activeSessionId, 'drag-over': dragOverKey === dragKey('recent', session.id) }"
+                draggable="true"
+                @dragstart="beginDrag($event, 'recent', session.id)"
+                @dragover="trackDragOver($event, 'recent', session.id)"
+                @drop.prevent="finishDrop('recent', session.id)"
+                @dragend="endDrag"
+              >
+                <span class="drag-handle recent-drag-handle" title="拖动对话排序"><GripVertical :size="15" /></span>
+                <button class="session-open" type="button" :disabled="loading" @click="openThread(session)">
+                  <span class="session-title">{{ session.title }}</span>
+                  <span class="session-columns">
+                    <small>状态：{{ statusLabel(session.status) }}</small>
+                    <small>更新：{{ formatShortDate(session.updatedAt) }}</small>
+                  </span>
+                </button>
+                <button class="delete-thread" type="button" title="删除对话" @click="removeThread(session)">
+                  <Trash2 :size="15" />
+                </button>
+              </article>
+            </div>
+            <div v-if="!recentSessions.length" class="sidebar-empty">暂无非项目对话</div>
           </section>
         </div>
       </aside>
@@ -1743,14 +1965,6 @@ function transportLabel(status: typeof transportState.value) {
           </label>
         </section>
 
-        <section class="new-session">
-          <input v-model="firstPrompt" type="text" placeholder="新任务第一句话" @keydown.enter="startSession" />
-          <button class="primary icon-text" type="button" :disabled="loading" @click="startSession">
-            <MessageSquarePlus :size="18" />
-            <span>新会话</span>
-          </button>
-        </section>
-
         <section v-if="activeSession" ref="transcriptEl" class="transcript">
       <article class="event-block session-summary">
         <div>
@@ -1793,7 +2007,19 @@ function transportLabel(status: typeof transportState.value) {
           <p>选择左侧历史对话，或启动一个新的 Codex 会话。</p>
         </section>
 
-        <form class="composer" @submit.prevent="submitMessage">
+        <form
+          class="composer"
+          :class="{ 'drop-active': composerDropActive }"
+          @submit.prevent="submitMessage"
+          @paste="handlePaste"
+          @dragover="handleComposerDragOver"
+          @dragleave="handleComposerDragLeave"
+          @drop="handleComposerDrop"
+        >
+          <div v-if="composerDropActive" class="composer-drop-hint" aria-live="polite">
+            <ImagePlus :size="18" />
+            <span>释放图片以上传</span>
+          </div>
           <div v-if="attachments.length" class="attachment-strip">
             <figure v-for="(attachment, index) in attachments" :key="attachment.id || attachment.path || index">
               <img v-if="attachment.url || attachment.previewUrl" :src="attachment.url || attachment.previewUrl" :alt="attachment.name || '图片附件'" />
@@ -1816,7 +2042,6 @@ function transportLabel(status: typeof transportState.value) {
             placeholder="继续给 Codex 发消息"
             :disabled="!activeSession"
             @keydown="handleComposerKeydown"
-            @paste="handlePaste"
           />
           <button class="primary send" type="submit" title="发送" :disabled="!activeSession || (!draft.trim() && !attachments.length) || loading">
             <Send :size="19" />
