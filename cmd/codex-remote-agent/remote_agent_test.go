@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -180,6 +181,67 @@ func TestResumeThreadReusesAttachedThreadAndKeepsEvents(t *testing.T) {
 	}
 	if events := store.Events(threadID, 0, 10); len(events) != 1 || events[0].Payload["text"] != "保留" {
 		t.Fatalf("existing events were not preserved: %#v", events)
+	}
+}
+
+func TestResumeThreadReadsHistoryWhenAnotherWriterIsActive(t *testing.T) {
+	store := NewStore(t.TempDir())
+	attachedID := "thread-attached"
+	busyID := "thread-busy"
+	requests := []string{}
+	bridge := &Bridge{
+		cmd:             &exec.Cmd{},
+		initialized:     true,
+		codexThreadID:   attachedID,
+		session:         &Session{ID: attachedID, Title: "当前可写会话", Mode: "host-new-session", Status: "idle"},
+		store:           store,
+		readOnlyThreads: map[string]Session{},
+		requestHook: func(method string, params interface{}) (interface{}, error) {
+			requests = append(requests, method)
+			switch method {
+			case "thread/resume":
+				return nil, errors.New("thread/resume error: map[code:-32600 message:thread thread-busy already has an active writer]")
+			case "thread/read":
+				body := params.(map[string]interface{})
+				if body["threadId"] != busyID || body["includeTurns"] != true {
+					t.Fatalf("unexpected thread/read params: %#v", body)
+				}
+				return map[string]interface{}{"thread": map[string]interface{}{
+					"id": busyID, "name": "桌面正在使用的会话", "status": "active",
+					"turns": []interface{}{map[string]interface{}{
+						"startedAt": 0,
+						"items": []interface{}{
+							map[string]interface{}{"type": "userMessage", "content": []interface{}{map[string]interface{}{"type": "text", "text": "历史问题"}}},
+							map[string]interface{}{"type": "agentMessage", "text": "历史回答"},
+						},
+					}},
+				}}, nil
+			default:
+				t.Fatalf("unexpected app-server request: %s", method)
+				return nil, nil
+			}
+		},
+	}
+
+	session, err := bridge.ResumeThread(busyID)
+	if err != nil {
+		t.Fatalf("active-writer fallback should succeed: %v", err)
+	}
+	if session.Mode != "host-readonly" || session.Note != readOnlyThreadNote {
+		t.Fatalf("expected read-only session, got %#v", session)
+	}
+	if got := bridge.CurrentSession(); got == nil || got.ID != attachedID {
+		t.Fatalf("active writable session was replaced: %#v", got)
+	}
+	if len(requests) != 2 || requests[0] != "thread/resume" || requests[1] != "thread/read" {
+		t.Fatalf("expected resume then read fallback, got %#v", requests)
+	}
+	events := store.Events(busyID, 0, 10)
+	if len(events) != 2 || events[0].Payload["text"] != "历史问题" || events[1].Payload["text"] != "历史回答" {
+		t.Fatalf("history was not hydrated: %#v", events)
+	}
+	if err := bridge.SendMessage("不应发送", busyID, nil); !errors.Is(err, errThreadReadOnly) {
+		t.Fatalf("expected read-only write rejection, got %v", err)
 	}
 }
 

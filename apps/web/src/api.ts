@@ -1,4 +1,4 @@
-export type SessionMode = "desktop-attached" | "host-new-session" | "disconnected" | "error";
+export type SessionMode = "desktop-attached" | "host-new-session" | "host-readonly" | "disconnected" | "error";
 
 export type SessionRecord = {
   id: string;

@@ -23,6 +23,10 @@ import (
 
 const baseDeveloperInstructions = "请全程使用中文与用户交流。除非用户明确要求其他语言，否则回复、解释、状态说明和审批说明均使用简体中文。"
 
+const readOnlyThreadNote = "该对话正在由本机 Codex 使用，当前仅可查看历史。"
+
+var errThreadReadOnly = errors.New("该对话正在由本机 Codex 使用，当前仅可查看历史")
+
 type Session struct {
 	ID         string      `json:"id"`
 	Title      string      `json:"title"`
@@ -345,6 +349,8 @@ type Bridge struct {
 	codexBin        string
 	cwd             string
 	store           *Store
+	readOnlyThreads map[string]Session
+	requestHook     func(string, interface{}) (interface{}, error)
 }
 
 func NewBridge(store *Store, cwd string) *Bridge {
@@ -361,6 +367,7 @@ func NewBridge(store *Store, cwd string) *Bridge {
 		codexBin:        codexBin,
 		cwd:             cwd,
 		store:           store,
+		readOnlyThreads: map[string]Session{},
 	}
 }
 
@@ -507,6 +514,9 @@ func (b *Bridge) readStderr(reader io.Reader) {
 }
 
 func (b *Bridge) request(method string, params interface{}) (interface{}, error) {
+	if b.requestHook != nil {
+		return b.requestHook(method, params)
+	}
 	b.rpcMu.Lock()
 	defer b.rpcMu.Unlock()
 	return b.requestLocked(method, params)
@@ -734,7 +744,10 @@ func (b *Bridge) ResumeThread(threadID string) (Session, error) {
 		"developerInstructions": developerInstructions(settings),
 	}, settings))
 	if err != nil {
-		return Session{}, err
+		if !isActiveWriterError(err) {
+			return Session{}, err
+		}
+		return b.readThreadWhileWriterIsActive(threadID)
 	}
 	thread := asMap(asMap(result)["thread"])
 	session := threadToSession(thread)
@@ -743,14 +756,59 @@ func (b *Bridge) ResumeThread(threadID string) (Session, error) {
 	b.mu.Lock()
 	b.codexThreadID = session.ID
 	b.session = &session
+	delete(b.readOnlyThreads, session.ID)
 	b.mu.Unlock()
 	b.store.ClearEvents(session.ID)
 	b.emit("session.status", map[string]interface{}{"status": session.Status, "mode": session.Mode})
-	b.hydrateThread(thread)
+	b.hydrateThread(session.ID, thread)
 	return session, nil
 }
 
+func (b *Bridge) readThreadWhileWriterIsActive(threadID string) (Session, error) {
+	result, err := b.request("thread/read", map[string]interface{}{
+		"threadId":     threadID,
+		"includeTurns": true,
+	})
+	if err != nil {
+		return Session{}, fmt.Errorf("读取被本机 Codex 占用的对话失败: %w", err)
+	}
+	thread := asMap(asMap(result)["thread"])
+	session := threadToSession(thread)
+	if session.ID == "" {
+		return Session{}, errors.New("Codex app-server 未返回对话 ID")
+	}
+	session.Mode = "host-readonly"
+	session.Note = readOnlyThreadNote
+	session = b.store.EnrichSession(session)
+	b.mu.Lock()
+	if b.readOnlyThreads == nil {
+		b.readOnlyThreads = map[string]Session{}
+	}
+	b.readOnlyThreads[session.ID] = session
+	b.mu.Unlock()
+	b.store.ClearEvents(session.ID)
+	b.store.UpsertSession(session)
+	b.hydrateThread(session.ID, thread)
+	return session, nil
+}
+
+func isActiveWriterError(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "already has an active writer")
+}
+
 func (b *Bridge) ArchiveThread(threadID string) error {
+	b.mu.Lock()
+	_, readOnly := b.readOnlyThreads[threadID]
+	b.mu.Unlock()
+	if readOnly {
+		session, err := b.ResumeThread(threadID)
+		if err != nil {
+			return err
+		}
+		if session.Mode == "host-readonly" {
+			return errThreadReadOnly
+		}
+	}
 	if err := b.ensureReady(); err != nil {
 		return err
 	}
@@ -831,7 +889,7 @@ func (b *Bridge) startCodexThread() error {
 }
 
 func (b *Bridge) SendMessage(text, sessionID string, attachments []Attachment) error {
-	if err := b.ensureSession(sessionID); err != nil {
+	if err := b.ensureWritableSession(sessionID); err != nil {
 		return err
 	}
 	input := messageInput(text, attachments)
@@ -867,13 +925,21 @@ func (b *Bridge) ensureSession(sessionID string) error {
 		return nil
 	}
 	if sessionID != "" {
-		if _, err := b.ResumeThread(sessionID); err != nil {
+		session, err := b.ResumeThread(sessionID)
+		if err != nil {
 			return err
+		}
+		if session.Mode == "host-readonly" {
+			return errThreadReadOnly
 		}
 		return nil
 	}
 	_, err := b.CreateSession("")
 	return err
+}
+
+func (b *Bridge) ensureWritableSession(sessionID string) error {
+	return b.ensureSession(sessionID)
 }
 
 func (b *Bridge) QueueList(sessionID string) ([]QueuedSubmission, error) {
@@ -906,7 +972,7 @@ func (b *Bridge) QueueList(sessionID string) ([]QueuedSubmission, error) {
 }
 
 func (b *Bridge) QueueAdd(sessionID, text string, attachments []Attachment) (QueuedSubmission, error) {
-	if err := b.ensureSession(sessionID); err != nil {
+	if err := b.ensureWritableSession(sessionID); err != nil {
 		return QueuedSubmission{}, err
 	}
 	input := messageInput(text, attachments)
@@ -933,7 +999,7 @@ func (b *Bridge) QueueAdd(sessionID, text string, attachments []Attachment) (Que
 }
 
 func (b *Bridge) QueueUpdate(sessionID, submissionID string, input []map[string]interface{}) (QueuedSubmission, error) {
-	if err := b.ensureSession(sessionID); err != nil {
+	if err := b.ensureWritableSession(sessionID); err != nil {
 		return QueuedSubmission{}, err
 	}
 	if submissionID == "" || len(input) == 0 {
@@ -959,7 +1025,7 @@ func (b *Bridge) QueueUpdate(sessionID, submissionID string, input []map[string]
 }
 
 func (b *Bridge) QueueDelete(sessionID, submissionID string) error {
-	if err := b.ensureSession(sessionID); err != nil {
+	if err := b.ensureWritableSession(sessionID); err != nil {
 		return err
 	}
 	b.mu.Lock()
@@ -970,7 +1036,7 @@ func (b *Bridge) QueueDelete(sessionID, submissionID string) error {
 }
 
 func (b *Bridge) QueueReorder(sessionID string, submissionIDs []string) error {
-	if err := b.ensureSession(sessionID); err != nil {
+	if err := b.ensureWritableSession(sessionID); err != nil {
 		return err
 	}
 	b.mu.Lock()
@@ -981,7 +1047,7 @@ func (b *Bridge) QueueReorder(sessionID string, submissionIDs []string) error {
 }
 
 func (b *Bridge) PromoteQueue(sessionID, submissionID string) error {
-	if err := b.ensureSession(sessionID); err != nil {
+	if err := b.ensureWritableSession(sessionID); err != nil {
 		return err
 	}
 	queue, err := b.QueueList(sessionID)
@@ -1073,7 +1139,7 @@ func (b *Bridge) GetGoal(sessionID string) (*ThreadGoal, error) {
 }
 
 func (b *Bridge) SetGoal(sessionID, objective string) (*ThreadGoal, error) {
-	if err := b.ensureSession(sessionID); err != nil {
+	if err := b.ensureWritableSession(sessionID); err != nil {
 		return nil, err
 	}
 	b.mu.Lock()
@@ -1092,7 +1158,7 @@ func (b *Bridge) SetGoal(sessionID, objective string) (*ThreadGoal, error) {
 }
 
 func (b *Bridge) ClearGoal(sessionID string) error {
-	if err := b.ensureSession(sessionID); err != nil {
+	if err := b.ensureWritableSession(sessionID); err != nil {
 		return err
 	}
 	b.mu.Lock()
@@ -1137,13 +1203,7 @@ func (b *Bridge) Cancel() error {
 	return nil
 }
 
-func (b *Bridge) hydrateThread(thread map[string]interface{}) {
-	b.mu.Lock()
-	sessionID := ""
-	if b.session != nil {
-		sessionID = b.session.ID
-	}
-	b.mu.Unlock()
+func (b *Bridge) hydrateThread(sessionID string, thread map[string]interface{}) {
 	if sessionID == "" {
 		return
 	}

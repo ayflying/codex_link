@@ -190,9 +190,11 @@ const p2p = new P2PTransport({
 
 const activeSession = computed(() => sessions.value.find((session) => session.id === activeSessionId.value));
 const activeDevice = computed(() => devices.value.find((device) => device.id === activeDeviceId.value));
+const activeSessionReadOnly = computed(() => activeSession.value?.mode === "host-readonly");
+const canModifyActiveSession = computed(() => Boolean(activeSession.value) && !activeSessionReadOnly.value);
 const composerHasInput = computed(() => Boolean(draft.value.trim()) || attachments.value.length > 0);
 const activeSessionRunning = computed(() => activeSession.value?.status === "running");
-const showStopButton = computed(() => activeSessionRunning.value && !composerHasInput.value);
+const showStopButton = computed(() => activeSessionRunning.value && !composerHasInput.value && !activeSessionReadOnly.value);
 const groupedSessions = computed(() => {
   const groups = new Map<string, { cwd: string; label: string; sessions: SessionRecord[] }>();
   for (const session of sessions.value) {
@@ -277,7 +279,9 @@ watch(activeSessionId, (sessionId) => {
   connectEvents(sessionId);
 	queuedSubmissions.value = [];
 	threadGoal.value = null;
-	if (sessionId) {
+	composerMenuOpen.value = false;
+	goalEditorOpen.value = false;
+	if (sessionId && !activeSessionReadOnly.value) {
 		void loadQueue(sessionId);
 		void loadGoal(sessionId);
 	}
@@ -911,6 +915,10 @@ async function openThread(session: SessionRecord) {
     upsertSession(resumed);
     forceScrollToBottom.value = true;
     activeSessionId.value = resumed.id;
+		if (resumed.mode === "host-readonly") {
+			draft.value = "";
+			attachments.value = [];
+		}
     sidebarOpen.value = false;
     await nextTick();
     await scrollTranscriptToBottom();
@@ -923,6 +931,7 @@ async function openThread(session: SessionRecord) {
 }
 
 async function removeThread(session: SessionRecord) {
+	if (session.mode === "host-readonly") return;
   if (!window.confirm(`确认删除“${session.title}”吗？该对话会同步从 Codex 列表中归档。`)) return;
   loading.value = true;
   error.value = "";
@@ -945,11 +954,12 @@ async function removeThread(session: SessionRecord) {
 }
 
 async function submitMessage() {
-  if (!activeSession.value || !composerHasInput.value || composerBusy.value) return;
+	const session = activeSession.value;
+	if (!session || activeSessionReadOnly.value || !composerHasInput.value || composerBusy.value) return;
   composerBusy.value = true;
   error.value = "";
   try {
-    const sessionID = activeSession.value.id;
+		const sessionID = session.id;
     const text = draft.value.trim();
     const messageAttachments = [...attachments.value];
     if (activeSessionRunning.value) {
@@ -993,6 +1003,7 @@ function queueAttachments(item: QueuedSubmission): Attachment[] {
 }
 
 async function loadQueue(sessionID: string) {
+	if (activeSessionReadOnly.value) return;
   queueLoading.value = true;
   try {
     const result = await commandWithFallback<{ queue: QueuedSubmission[] }>("queue.list", { id: sessionID }, () => getQueue(sessionID));
@@ -1005,6 +1016,7 @@ async function loadQueue(sessionID: string) {
 }
 
 async function loadGoal(sessionID: string) {
+	if (activeSessionReadOnly.value) return;
   try {
     const result = await commandWithFallback<{ goal: ThreadGoal | null }>("goal.get", { id: sessionID }, () => getGoal(sessionID));
     if (activeSessionId.value === sessionID) threadGoal.value = result.goal;
@@ -1141,17 +1153,20 @@ function selectModel(event: Event) {
 }
 
 function openFilePicker() {
+	if (!canModifyActiveSession.value) return;
   composerMenuOpen.value = false;
   fileInput.value?.click();
 }
 
 function openGoalEditor() {
+	if (!canModifyActiveSession.value) return;
   goalDraft.value = threadGoal.value?.objective || "";
   goalEditorOpen.value = true;
   composerMenuOpen.value = false;
 }
 
 async function addFiles(files: File[]) {
+	if (!canModifyActiveSession.value) return;
   try {
     for (const file of files) await addAttachmentFile(file);
   } catch (reason) {
@@ -1160,6 +1175,7 @@ async function addFiles(files: File[]) {
 }
 
 async function handlePaste(event: ClipboardEvent) {
+	if (!canModifyActiveSession.value) return;
   const items = Array.from(event.clipboardData?.items || []);
   const imageItems = items.filter((item) => item.type.startsWith("image/"));
   if (imageItems.length === 0) return;
@@ -1168,6 +1184,7 @@ async function handlePaste(event: ClipboardEvent) {
 }
 
 async function handleFilePicked(event: Event) {
+	if (!canModifyActiveSession.value) return;
   const input = event.target as HTMLInputElement;
   const files = Array.from(input.files || []);
   await addFiles(files);
@@ -1175,6 +1192,7 @@ async function handleFilePicked(event: Event) {
 }
 
 function handleComposerDragOver(event: DragEvent) {
+	if (!canModifyActiveSession.value) return;
   const types = Array.from(event.dataTransfer?.types || []);
   if (!types.includes("Files")) return;
   event.preventDefault();
@@ -1189,6 +1207,7 @@ function handleComposerDragLeave(event: DragEvent) {
 }
 
 async function handleComposerDrop(event: DragEvent) {
+	if (!canModifyActiveSession.value) return;
   event.preventDefault();
   composerDropActive.value = false;
   try {
@@ -1716,6 +1735,7 @@ function modeLabel(mode?: SessionRecord["mode"]) {
   const labels: Record<SessionRecord["mode"], string> = {
     "desktop-attached": "桌面任务",
     "host-new-session": "宿主机会话",
+		"host-readonly": "仅查看历史",
     disconnected: "未连接",
     error: "异常"
   };
@@ -2218,7 +2238,7 @@ function transportLabel(status: typeof transportState.value) {
                       <small>更新：{{ formatShortDate(session.updatedAt) }}</small>
                     </span>
                   </button>
-                  <button class="delete-thread" type="button" title="删除对话" @click="removeThread(session)">
+                  <button class="delete-thread" type="button" title="删除对话" :disabled="session.mode === 'host-readonly'" @click="removeThread(session)">
                     <Trash2 :size="15" />
                   </button>
                 </article>
@@ -2259,7 +2279,7 @@ function transportLabel(status: typeof transportState.value) {
                     <small>更新：{{ formatShortDate(session.updatedAt) }}</small>
                   </span>
                 </button>
-                <button class="delete-thread" type="button" title="删除对话" @click="removeThread(session)">
+                <button class="delete-thread" type="button" title="删除对话" :disabled="session.mode === 'host-readonly'" @click="removeThread(session)">
                   <Trash2 :size="15" />
                 </button>
               </article>
@@ -2305,7 +2325,7 @@ function transportLabel(status: typeof transportState.value) {
       <article class="event-block session-summary">
         <div>
           <strong>{{ activeSession.title }}</strong>
-          <p>{{ activeSession.cwd || "Host workspace" }}</p>
+          <p>{{ activeSession.note || activeSession.cwd || "Host workspace" }}</p>
         </div>
         <span>{{ statusLabel(activeSession.status) }}</span>
       </article>
@@ -2352,7 +2372,7 @@ function transportLabel(status: typeof transportState.value) {
           @dragleave="handleComposerDragLeave"
           @drop="handleComposerDrop"
         >
-          <section v-if="queuedSubmissions.length" class="queue-panel" aria-label="待发送消息">
+          <section v-if="!activeSessionReadOnly && queuedSubmissions.length" class="queue-panel" aria-label="待发送消息">
             <div class="queue-panel-heading">
               <span><Clock3 :size="15" />待发送 {{ queuedSubmissions.length }}</span>
               <small v-if="queueLoading">正在同步</small>
@@ -2398,28 +2418,28 @@ function transportLabel(status: typeof transportState.value) {
             <textarea
               v-model="draft"
               rows="3"
-              placeholder="随心输入"
-              :disabled="!activeSession"
+              :disabled="!canModifyActiveSession"
+              :placeholder="activeSessionReadOnly ? '该对话正在被本机 Codex 使用，仅可查看历史' : '随心输入'"
               @keydown="handleComposerKeydown"
             />
             <div class="composer-actions">
-              <button class="icon-button composer-plus" type="button" title="添加文件、目标或计划模式" :disabled="!activeSession" @click="composerMenuOpen = !composerMenuOpen"><Plus :size="20" /></button>
+              <button class="icon-button composer-plus" type="button" title="添加文件、目标或计划模式" :disabled="!canModifyActiveSession" @click="composerMenuOpen = !composerMenuOpen"><Plus :size="20" /></button>
               <label class="composer-permission"><ShieldCheck :size="15" /><select v-model="settings.approvalMode" aria-label="权限模式" @change="saveSettings({ approvalMode: settings.approvalMode })"><option value="on-request">请求批准</option><option value="on-failure">按需批准</option><option value="never">完全访问</option></select></label>
             </div>
           </div>
-          <div v-if="composerMenuOpen" class="composer-menu">
+          <div v-if="composerMenuOpen && !activeSessionReadOnly" class="composer-menu">
             <div class="composer-menu-label">添加</div>
             <button type="button" class="composer-menu-item" @click="openFilePicker"><Paperclip :size="16" /><span>文件和文件夹</span></button>
             <button type="button" class="composer-menu-item" :class="{ active: threadGoal }" @click="openGoalEditor"><Target :size="16" /><span>目标</span><small>{{ threadGoal ? "已设置" : "设置要持续追踪的目标" }}</small></button>
             <button type="button" class="composer-menu-item" :class="{ active: settings.workMode === 'plan' }" @click="saveSettings({ workMode: settings.workMode === 'plan' ? 'edit' : 'plan' }); composerMenuOpen = false"><Clock3 :size="16" /><span>计划模式</span><small>{{ settings.workMode === 'plan' ? "已开启" : "开启计划模式" }}</small></button>
           </div>
-          <div v-if="goalEditorOpen" class="goal-editor">
+          <div v-if="goalEditorOpen && !activeSessionReadOnly" class="goal-editor">
             <div class="goal-editor-heading"><Target :size="16" /><strong>目标</strong><button type="button" class="queue-icon" title="关闭" @click="goalEditorOpen = false"><X :size="15" /></button></div>
             <textarea v-model="goalDraft" rows="3" placeholder="告诉 Codex 这项工作的目标" />
             <div class="goal-editor-actions"><button type="button" class="primary icon-text" @click="saveGoalDraft"><Save :size="14" /><span>保存目标</span></button><button v-if="threadGoal" type="button" class="ghost icon-text" @click="removeGoal"><Trash2 :size="14" /><span>清除</span></button></div>
           </div>
           <input ref="fileInput" class="hidden-file-input" type="file" multiple @change="handleFilePicked" />
-          <button class="primary send" :class="{ stop: showStopButton }" type="button" :title="showStopButton ? '停止' : activeSessionRunning ? '加入队列' : '发送'" :disabled="!activeSession || (!showStopButton && !composerHasInput) || composerBusy" @click="showStopButton ? cancel() : submitMessage()">
+          <button class="primary send" :class="{ stop: showStopButton }" type="button" :title="showStopButton ? '停止' : activeSessionRunning ? '加入队列' : '发送'" :disabled="!canModifyActiveSession || (!showStopButton && !composerHasInput) || composerBusy" @click="showStopButton ? cancel() : submitMessage()">
             <CircleStop v-if="showStopButton" :size="19" />
             <Send v-else :size="19" />
           </button>
