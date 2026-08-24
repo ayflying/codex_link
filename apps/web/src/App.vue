@@ -2257,13 +2257,8 @@ function transportLabel(status: typeof transportState.value) {
                   class="session-pill"
                   :class="{ active: session.id === activeSessionId }"
                 >
-                  <button class="session-open" type="button" :disabled="loading" @click="openThread(session)">
+                  <button class="session-open" type="button" :title="session.title" :disabled="loading" @click="openThread(session)">
                     <span class="session-title">{{ session.title }}</span>
-                    <span class="session-columns">
-                      <small>项目：{{ projectLabel(session.cwd || "") }}</small>
-                      <small>状态：{{ statusLabel(session.status) }}</small>
-                      <small>更新：{{ formatShortDate(session.updatedAt) }}</small>
-                    </span>
                   </button>
                   <button class="delete-thread" type="button" title="删除对话" :disabled="session.mode === 'host-readonly'" @click="removeThread(session)">
                     <Trash2 :size="15" />
@@ -2298,13 +2293,8 @@ function transportLabel(status: typeof transportState.value) {
                 @drop.prevent="finishDrop('recent', session.id)"
                 @dragend="endDrag"
               >
-                <span class="drag-handle recent-drag-handle" title="拖动对话排序"><GripVertical :size="15" /></span>
-                <button class="session-open" type="button" :disabled="loading" @click="openThread(session)">
+                <button class="session-open" type="button" :title="session.title" :disabled="loading" @click="openThread(session)">
                   <span class="session-title">{{ session.title }}</span>
-                  <span class="session-columns">
-                    <small>状态：{{ statusLabel(session.status) }}</small>
-                    <small>更新：{{ formatShortDate(session.updatedAt) }}</small>
-                  </span>
                 </button>
                 <button class="delete-thread" type="button" title="删除对话" :disabled="session.mode === 'host-readonly'" @click="removeThread(session)">
                   <Trash2 :size="15" />
