@@ -153,6 +153,7 @@ const eventSource = ref<EventSource | null>(null);
 const streamState = ref<"idle" | "connected" | "reconnecting">("idle");
 const transportState = ref<"idle" | "connecting" | "p2p" | "relay" | "failed">("idle");
 const transcriptEl = ref<HTMLElement | null>(null);
+const sessionListEl = ref<HTMLElement | null>(null);
 const renderLimit = ref(160);
 const forceScrollToBottom = ref(false);
 const sidebarOpen = ref(false);
@@ -310,6 +311,14 @@ watch(() => events.value.length, async () => {
   if (!nearBottom) return;
   element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
 });
+
+watch(
+  () => [groupedSessions.value.length, recentSessions.value.length, visibleProjectCount.value, visibleRecentCount.value, JSON.stringify(visibleProjectSessionCounts.value)],
+  async () => {
+    await nextTick();
+    loadSidebarAtViewport();
+  }
+);
 
 async function refresh() {
   if (!auth.value.authenticated) return;
@@ -1599,6 +1608,40 @@ function showMoreProjectSessions(cwd: string) {
   };
 }
 
+function isLazyLoadSentinelReached(container: HTMLElement, selector: string) {
+  const containerRect = container.getBoundingClientRect();
+  return [...container.querySelectorAll<HTMLElement>(selector)].find((element) => {
+    const rect = element.getBoundingClientRect();
+    return rect.top <= containerRect.bottom + 72 && rect.bottom >= containerRect.top - 72;
+  });
+}
+
+function loadSidebarAtViewport(container = sessionListEl.value) {
+  if (!container) return;
+  const projectSessionSentinel = isLazyLoadSentinelReached(container, "[data-lazy-project-sessions]");
+  if (projectSessionSentinel) {
+    const cwd = projectSessionSentinel.dataset.lazyProjectSessions;
+    if (cwd) showMoreProjectSessions(cwd);
+    return;
+  }
+  if (hasMoreProjects.value && isLazyLoadSentinelReached(container, "[data-lazy-projects]")) {
+    showMoreProjects();
+    return;
+  }
+  if (hasMoreRecentSessions.value && isLazyLoadSentinelReached(container, "[data-lazy-recent]")) {
+    showMoreRecentSessions();
+  }
+}
+
+function onSidebarScroll(event: Event) {
+  loadSidebarAtViewport(event.currentTarget as HTMLElement);
+}
+
+function onTranscriptScroll() {
+  const element = transcriptEl.value;
+  if (element && element.scrollTop <= 64) void loadOlderEvents();
+}
+
 function toggleProject(cwd: string) {
   const next = new Set(collapsedProjects.value);
   if (next.has(cwd)) next.delete(cwd);
@@ -2253,7 +2296,7 @@ function transportLabel(status: typeof transportState.value) {
           <button type="button" @click="collapseOtherProjects">折叠其它</button>
           <span>{{ visibleSessionCount }} / {{ sessions.length }}</span>
         </div>
-        <div class="session-list" aria-label="Sessions">
+        <div ref="sessionListEl" class="session-list" aria-label="Sessions" @scroll.passive="onSidebarScroll">
           <section class="sidebar-section">
             <div class="sidebar-section-heading">
               <span><Folder :size="15" />项目</span>
@@ -2304,15 +2347,11 @@ function transportLabel(status: typeof transportState.value) {
                     <Trash2 :size="15" />
                   </button>
                 </article>
-                <button v-if="!isProjectCollapsed(group.cwd) && hasMoreProjectSessions(group)" class="list-more" type="button" @click="showMoreProjectSessions(group.cwd)">
-                  展开更多对话（每次 {{ listPageSize }} 条）
-                </button>
+                <div v-if="!isProjectCollapsed(group.cwd) && hasMoreProjectSessions(group)" class="lazy-load-sentinel" :data-lazy-project-sessions="group.cwd" aria-hidden="true" />
               </section>
             </div>
             <div v-if="!groupedSessions.length" class="sidebar-empty">还没有项目对话</div>
-            <button v-if="hasMoreProjects" class="list-more" type="button" @click="showMoreProjects">
-              展开更多项目（每次 {{ listPageSize }} 个）
-            </button>
+            <div v-if="hasMoreProjects" class="lazy-load-sentinel" data-lazy-projects="true" aria-hidden="true" />
           </section>
 
           <section class="sidebar-section recent-section">
@@ -2342,9 +2381,7 @@ function transportLabel(status: typeof transportState.value) {
               </article>
             </div>
             <div v-if="!recentSessions.length" class="sidebar-empty">暂无最近对话</div>
-            <button v-if="hasMoreRecentSessions" class="list-more" type="button" @click="showMoreRecentSessions">
-              展开更多对话（每次 {{ listPageSize }} 条）
-            </button>
+            <div v-if="hasMoreRecentSessions" class="lazy-load-sentinel" data-lazy-recent="true" aria-hidden="true" />
           </section>
         </div>
       </aside>
@@ -2369,7 +2406,7 @@ function transportLabel(status: typeof transportState.value) {
           </div>
         </section>
 
-        <section v-if="activeSession" ref="transcriptEl" class="transcript">
+        <section v-if="activeSession" ref="transcriptEl" class="transcript" @scroll.passive="onTranscriptScroll">
       <article class="event-block session-summary">
         <div>
           <strong>{{ activeSession.title }}</strong>
@@ -2377,10 +2414,6 @@ function transportLabel(status: typeof transportState.value) {
         </div>
         <span>{{ statusLabel(activeSession.status) }}</span>
       </article>
-
-      <button v-if="hasEarlierEvents" class="load-older" type="button" :disabled="historyLoading" @click="loadOlderEvents">
-        {{ historyLoading ? "正在加载更早内容" : `显示更早 ${listPageSize} 条` }}
-      </button>
 
       <article
         v-for="event in visibleEvents"
