@@ -3,14 +3,11 @@ package main
 import (
 	"archive/zip"
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -36,8 +33,7 @@ func TestParseClientSemanticVersion(t *testing.T) {
 func TestStageClientUpdateDownloadsVerifiedAsset(t *testing.T) {
 	executable := []byte("verified Windows executable")
 	payload := zipClientExecutable(t, executable)
-	digest := sha256.Sum256(payload)
-	server := newClientUpdateServer(t, payload, hex.EncodeToString(digest[:]), "v1.2.4")
+	server := newClientUpdateServer(t, payload, "v1.2.4")
 	configureClientUpdateServer(t, server)
 
 	target := filepath.Join(t.TempDir(), "codex-remote-agent.exe")
@@ -61,23 +57,22 @@ func TestStageClientUpdateDownloadsVerifiedAsset(t *testing.T) {
 	}
 }
 
-func TestStageClientUpdateRejectsChecksumMismatch(t *testing.T) {
-	payload := zipClientExecutable(t, []byte("tampered executable"))
-	server := newClientUpdateServer(t, payload, strings.Repeat("0", sha256.Size*2), "v1.2.4")
+func TestStageClientUpdateRejectsCorruptArchive(t *testing.T) {
+	server := newClientUpdateServer(t, []byte("not a zip archive"), "v1.2.4")
 	configureClientUpdateServer(t, server)
 
 	executable := filepath.Join(t.TempDir(), "codex-remote-agent.exe")
 	current, _ := parseClientSemanticVersion("1.2.3")
 	if _, available, err := stageClientUpdate(executable, current); err == nil || available {
-		t.Fatalf("checksum mismatch must fail without staging: available=%v err=%v", available, err)
+		t.Fatalf("corrupt archive must fail without staging: available=%v err=%v", available, err)
 	}
 	if _, err := os.Stat(clientUpdateArtifactPath(executable, ".next")); !os.IsNotExist(err) {
-		t.Fatalf("checksum mismatch left a pending update: %v", err)
+		t.Fatalf("corrupt archive left a pending update: %v", err)
 	}
 }
 
 func TestStageClientUpdateSkipsCurrentRelease(t *testing.T) {
-	server := newClientUpdateServer(t, []byte("unused"), strings.Repeat("0", sha256.Size*2), "v1.2.3")
+	server := newClientUpdateServer(t, []byte("unused"), "v1.2.3")
 	configureClientUpdateServer(t, server)
 
 	current, _ := parseClientSemanticVersion("1.2.3")
@@ -98,12 +93,15 @@ func TestStageClientUpdateReportsReleaseRequestFailure(t *testing.T) {
 	}
 }
 
-func TestClientReleaseAssetsRequiresBothExpectedFiles(t *testing.T) {
-	_, _, err := clientReleaseAssets([]githubClientReleaseAsset{{
+func TestClientReleaseAssetRequiresArchive(t *testing.T) {
+	_, err := clientReleaseAsset([]githubClientReleaseAsset{{
 		Name: clientReleaseArchiveName, BrowserDownloadURL: "https://example.invalid/client.zip", Size: 1,
 	}})
-	if err == nil {
-		t.Fatal("release without checksum was accepted")
+	if err != nil {
+		t.Fatalf("valid archive was rejected: %v", err)
+	}
+	if _, err := clientReleaseAsset(nil); err == nil {
+		t.Fatal("release without archive was accepted")
 	}
 }
 
@@ -129,18 +127,7 @@ func TestExtractClientExecutableRejectsNestedEntry(t *testing.T) {
 	}
 }
 
-func TestParseClientChecksumRequiresExpectedFile(t *testing.T) {
-	digest := strings.Repeat("a", sha256.Size*2)
-	if _, err := parseClientChecksum([]byte(digest+"  other.zip\n"), clientReleaseArchiveName); err == nil {
-		t.Fatal("checksum for another file was accepted")
-	}
-	parsed, err := parseClientChecksum([]byte(digest+" *"+clientReleaseArchiveName+"\n"), clientReleaseArchiveName)
-	if err != nil || parsed != digest {
-		t.Fatalf("valid checksum was rejected: checksum=%q err=%v", parsed, err)
-	}
-}
-
-func newClientUpdateServer(t *testing.T, payload []byte, checksum, tag string) *httptest.Server {
+func newClientUpdateServer(t *testing.T, payload []byte, tag string) *httptest.Server {
 	t.Helper()
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -150,14 +137,11 @@ func newClientUpdateServer(t *testing.T, payload []byte, checksum, tag string) *
 				TagName: tag,
 				Assets: []githubClientReleaseAsset{
 					{Name: clientReleaseArchiveName, BrowserDownloadURL: server.URL + "/client.zip", Size: int64(len(payload))},
-					{Name: clientReleaseChecksumName, BrowserDownloadURL: server.URL + "/client.zip.sha256", Size: int64(len(checksum) + len(clientReleaseArchiveName) + 3)},
 				},
 			}
 			_ = json.NewEncoder(w).Encode(release)
 		case "/client.zip":
 			_, _ = w.Write(payload)
-		case "/client.zip.sha256":
-			_, _ = w.Write([]byte(checksum + "  " + clientReleaseArchiveName + "\n"))
 		default:
 			http.NotFound(w, request)
 		}

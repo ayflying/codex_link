@@ -68,7 +68,7 @@ git tag "v$version"
 git push origin main --follow-tags
 ```
 
-客户端发布 CI 只监听 `vX.Y.Z` 标签，在 GitHub Runner 上测试并交叉编译 Windows x64 客户端，压缩为 `codex-remote-agent-windows-amd64.zip`，创建同名 GitHub Release，发布压缩包与 SHA-256 校验文件。镜像 CI 独立监听推送到 `main` 的代码，在 GitHub Runner 上构建并推送 `ghcr.io/ayflying/codex_link:<VERSION>` 与 `ghcr.io/ayflying/codex_link:latest`。两条 CI 都不依赖本地机器或远程构建服务器。Compose 默认使用 `latest`；需要回滚或跳转版本时，把镜像改为 `ghcr.io/ayflying/codex_link:0.2.3` 等具体标签后重新部署。CI 不会自动操作生产主机，仍需手动执行 `docker compose up -d --pull always`。`scripts\publish-relay.ps1` 和 `scripts\package-remote.ps1` 仅作为 GitHub Actions 不可用时的手动兼容路径。
+客户端发布 CI 只监听 `vX.Y.Z` 标签，在 GitHub Runner 上测试并交叉编译 Windows x64 客户端，压缩为 `codex-remote-agent-windows-amd64.zip`，创建同名 GitHub Release，仅发布压缩包。镜像 CI 独立监听推送到 `main` 的代码，在 GitHub Runner 上构建并推送 `ghcr.io/ayflying/codex_link:<VERSION>` 与 `ghcr.io/ayflying/codex_link:latest`。两条 CI 都不依赖本地机器或远程构建服务器。Compose 默认使用 `latest`；需要回滚或跳转版本时，把镜像改为 `ghcr.io/ayflying/codex_link:0.2.3` 等具体标签后重新部署。CI 不会自动操作生产主机，仍需手动执行 `docker compose up -d --pull always`。`scripts\publish-relay.ps1` 和 `scripts\package-remote.ps1` 仅作为 GitHub Actions 不可用时的手动兼容路径。
 
 账号、Token、设备、会话和事件保存在 MySQL volume `mysql_data`，服务端中转的文件保存在 Docker volume `data`。P2P 模式下文件直接写入 agent 的本地 `data-remote-agent/uploads`，不会经过 relay。新数据库从空数据开始，不会导入旧的 `relay-store.json`。服务端不保存本机 Codex/CCS/API Key。
 
@@ -116,7 +116,7 @@ ports:
 
 ## 构建客户端
 
-正式客户端从 GitHub Releases 下载 `codex-remote-agent-windows-amd64.zip`。客户端每次启动都会检查最新正式 Release；只有版本更高、压缩包下载完成、SHA-256 校验通过且包含固定 exe 时才会替换自身并以原参数重启。GitHub 不可用、下载失败或校验失败时会继续运行当前版本。
+正式客户端从 GitHub Releases 下载 `codex-remote-agent-windows-amd64.zip`。客户端每次启动都会检查最新正式 Release；只有版本更高、压缩包下载完成、文件大小有效且包含固定 exe 时才会替换自身并以原参数重启。GitHub 不可用、下载失败或压缩包损坏时会继续运行当前版本。
 
 以下命令保留用于离线手动交付：
 

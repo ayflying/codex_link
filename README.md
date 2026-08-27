@@ -167,7 +167,7 @@ git tag "v$version"
 git push origin main --follow-tags
 ```
 
-客户端发布 CI 只监听 `vX.Y.Z` 标签，在 GitHub Runner 上测试并交叉编译 Windows x64 客户端，压缩为 `codex-remote-agent-windows-amd64.zip`，创建同名 GitHub Release，上传压缩包及其 `.sha256` 文件。服务器镜像 CI 独立监听推送到 `main` 的代码，在 GitHub Runner 上构建并推送 `ghcr.io/ayflying/codex_link:<VERSION>` 和 `ghcr.io/ayflying/codex_link:latest`。两条 CI 都不依赖本地机器或远程构建服务器。Compose 默认使用 `latest`；需要固定或回滚版本时，将 `docker-compose.yml` 中的镜像标签改为对应版本号后再部署。CI 只上传产物，不会自动修改生产服务器；服务器仍需执行：
+客户端发布 CI 只监听 `vX.Y.Z` 标签，在 GitHub Runner 上测试并交叉编译 Windows x64 客户端，压缩为 `codex-remote-agent-windows-amd64.zip`，创建同名 GitHub Release，仅上传压缩包。服务器镜像 CI 独立监听推送到 `main` 的代码，在 GitHub Runner 上构建并推送 `ghcr.io/ayflying/codex_link:<VERSION>` 和 `ghcr.io/ayflying/codex_link:latest`。两条 CI 都不依赖本地机器或远程构建服务器。Compose 默认使用 `latest`；需要固定或回滚版本时，将 `docker-compose.yml` 中的镜像标签改为对应版本号后再部署。CI 只上传产物，不会自动修改生产服务器；服务器仍需执行：
 
 ```bash
 docker compose up -d --pull always
@@ -185,7 +185,7 @@ docker compose up -d --pull always
 
 ## 构建和登录客户端
 
-正式客户端请从 GitHub Releases 下载 `codex-remote-agent-windows-amd64.zip`。客户端启动时会检查最新正式 Release；发现更高版本后下载压缩包、校验 SHA-256、提取 exe、自动替换并按原启动参数重启。GitHub 不可访问、下载失败或校验失败不会阻止当前客户端启动。
+正式客户端请从 GitHub Releases 下载 `codex-remote-agent-windows-amd64.zip`。客户端启动时会检查最新正式 Release；发现更高版本后下载压缩包、检查文件大小并尝试提取固定 exe，成功后自动替换并按原启动参数重启。GitHub 不可访问、下载失败或压缩包损坏不会阻止当前客户端启动。
 
 保留以下远程打包命令用于离线手动交付：
 

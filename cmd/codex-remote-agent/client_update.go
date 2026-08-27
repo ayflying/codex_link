@@ -2,9 +2,6 @@ package main
 
 import (
 	"archive/zip"
-	"bufio"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,9 +19,7 @@ const (
 	defaultClientReleaseLatestURL = "https://api.github.com/repos/ayflying/codex_link/releases/latest"
 	clientReleaseArchiveName      = "codex-remote-agent-windows-amd64.zip"
 	clientReleaseExecutableName   = "codex-remote-agent.exe"
-	clientReleaseChecksumName     = clientReleaseArchiveName + ".sha256"
 	clientUpdateMaxBytes          = 200 * 1024 * 1024
-	clientChecksumMaxBytes        = 16 * 1024
 	clientReleaseMaxBytes         = 512 * 1024
 	clientUpdateHelperFlag        = "--apply-client-update"
 )
@@ -146,16 +141,12 @@ func stageClientUpdate(executable string, currentVersion clientSemanticVersion) 
 	if latestVersion.Compare(currentVersion) <= 0 {
 		return "", false, nil
 	}
-	executableAsset, checksumAsset, err := clientReleaseAssets(release.Assets)
-	if err != nil {
-		return "", false, err
-	}
-	checksum, err := fetchClientChecksum(checksumAsset)
+	executableAsset, err := clientReleaseAsset(release.Assets)
 	if err != nil {
 		return "", false, err
 	}
 	pending := clientUpdateArtifactPath(executable, ".next")
-	if err := downloadClientAsset(executableAsset, pending, checksum); err != nil {
+	if err := downloadClientAsset(executableAsset, pending); err != nil {
 		return "", false, err
 	}
 	return pending, true, nil
@@ -183,69 +174,20 @@ func fetchLatestClientRelease() (githubClientRelease, error) {
 	return release, nil
 }
 
-func clientReleaseAssets(assets []githubClientReleaseAsset) (githubClientReleaseAsset, githubClientReleaseAsset, error) {
+func clientReleaseAsset(assets []githubClientReleaseAsset) (githubClientReleaseAsset, error) {
 	var executable githubClientReleaseAsset
-	var checksum githubClientReleaseAsset
 	for _, asset := range assets {
-		switch asset.Name {
-		case clientReleaseArchiveName:
+		if asset.Name == clientReleaseArchiveName {
 			executable = asset
-		case clientReleaseChecksumName:
-			checksum = asset
 		}
 	}
 	if executable.BrowserDownloadURL == "" || executable.Size <= 0 || executable.Size > clientUpdateMaxBytes {
-		return githubClientReleaseAsset{}, githubClientReleaseAsset{}, errors.New("最新客户端发布缺少有效的 Windows x64 压缩包")
+		return githubClientReleaseAsset{}, errors.New("最新客户端发布缺少有效的 Windows x64 压缩包")
 	}
-	if checksum.BrowserDownloadURL == "" || checksum.Size <= 0 || checksum.Size > clientChecksumMaxBytes {
-		return githubClientReleaseAsset{}, githubClientReleaseAsset{}, errors.New("最新客户端发布缺少有效的 SHA-256 校验文件")
-	}
-	return executable, checksum, nil
+	return executable, nil
 }
 
-func fetchClientChecksum(asset githubClientReleaseAsset) (string, error) {
-	response, err := fetchClientAsset(asset)
-	if err != nil {
-		return "", err
-	}
-	defer response.Body.Close()
-	content, err := io.ReadAll(io.LimitReader(response.Body, clientChecksumMaxBytes+1))
-	if err != nil {
-		return "", fmt.Errorf("读取客户端校验文件失败: %w", err)
-	}
-	if len(content) > clientChecksumMaxBytes {
-		return "", errors.New("客户端校验文件过大")
-	}
-	return parseClientChecksum(content, clientReleaseArchiveName)
-}
-
-func parseClientChecksum(content []byte, expectedFileName string) (string, error) {
-	scanner := bufio.NewScanner(strings.NewReader(string(content)))
-	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) < 2 {
-			continue
-		}
-		fileName := strings.TrimPrefix(fields[1], "*")
-		if fileName != expectedFileName {
-			continue
-		}
-		digest := strings.ToLower(fields[0])
-		if len(digest) != sha256.Size*2 {
-			continue
-		}
-		if _, err := hex.DecodeString(digest); err != nil {
-			continue
-		}
-		return digest, nil
-	}
-	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("读取客户端校验文件失败: %w", err)
-	}
-	return "", errors.New("客户端校验文件格式无效")
-}
-
-func downloadClientAsset(asset githubClientReleaseAsset, pendingPath, expectedChecksum string) error {
+func downloadClientAsset(asset githubClientReleaseAsset, pendingPath string) error {
 	response, err := fetchClientAsset(asset)
 	if err != nil {
 		return err
@@ -264,8 +206,7 @@ func downloadClientAsset(asset githubClientReleaseAsset, pendingPath, expectedCh
 		_ = temporary.Close()
 		_ = os.Remove(temporaryPath)
 	}()
-	hash := sha256.New()
-	written, err := io.Copy(io.MultiWriter(temporary, hash), io.LimitReader(response.Body, clientUpdateMaxBytes+1))
+	written, err := io.Copy(temporary, io.LimitReader(response.Body, clientUpdateMaxBytes+1))
 	if err != nil {
 		return fmt.Errorf("下载客户端更新失败: %w", err)
 	}
@@ -274,10 +215,6 @@ func downloadClientAsset(asset githubClientReleaseAsset, pendingPath, expectedCh
 	}
 	if asset.Size > 0 && written != asset.Size {
 		return errors.New("客户端更新文件大小与发布信息不一致")
-	}
-	actualChecksum := hex.EncodeToString(hash.Sum(nil))
-	if !strings.EqualFold(actualChecksum, expectedChecksum) {
-		return errors.New("客户端更新文件校验失败")
 	}
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("保存客户端更新失败: %w", err)

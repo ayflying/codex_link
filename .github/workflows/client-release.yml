@@ -55,7 +55,6 @@ jobs:
             -o "dist/$CLIENT_EXECUTABLE" ./cmd/codex-remote-agent
           (cd dist && zip -q -j "$CLIENT_ASSET" "$CLIENT_EXECUTABLE")
           rm "dist/$CLIENT_EXECUTABLE"
-          sha256sum "dist/$CLIENT_ASSET" > "dist/$CLIENT_ASSET.sha256"
 
       - name: 创建或更新 GitHub Release
         shell: bash
@@ -65,7 +64,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.value }}
         run: |
           set -euo pipefail
-          assets=("dist/$CLIENT_ASSET" "dist/$CLIENT_ASSET.sha256")
+          assets=("dist/$CLIENT_ASSET")
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
           else
