@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -32,34 +34,36 @@ func TestParseClientSemanticVersion(t *testing.T) {
 }
 
 func TestStageClientUpdateDownloadsVerifiedAsset(t *testing.T) {
-	payload := []byte("verified Windows executable")
+	executable := []byte("verified Windows executable")
+	payload := zipClientExecutable(t, executable)
 	digest := sha256.Sum256(payload)
 	server := newClientUpdateServer(t, payload, hex.EncodeToString(digest[:]), "v1.2.4")
 	configureClientUpdateServer(t, server)
 
-	executable := filepath.Join(t.TempDir(), "codex-remote-agent.exe")
+	target := filepath.Join(t.TempDir(), "codex-remote-agent.exe")
 	current, _ := parseClientSemanticVersion("1.2.3")
-	pending, available, err := stageClientUpdate(executable, current)
+	pending, available, err := stageClientUpdate(target, current)
 	if err != nil {
 		t.Fatalf("stage update: %v", err)
 	}
 	if !available {
 		t.Fatal("expected a newer release")
 	}
-	if want := filepath.Join(filepath.Dir(executable), "codex-remote-agent.next.exe"); pending != want {
+	if want := filepath.Join(filepath.Dir(target), "codex-remote-agent.next.exe"); pending != want {
 		t.Fatalf("pending path = %q, want %q", pending, want)
 	}
 	content, err := os.ReadFile(pending)
 	if err != nil {
 		t.Fatalf("read pending update: %v", err)
 	}
-	if string(content) != string(payload) {
-		t.Fatalf("pending content = %q, want %q", content, payload)
+	if string(content) != string(executable) {
+		t.Fatalf("pending content = %q, want %q", content, executable)
 	}
 }
 
 func TestStageClientUpdateRejectsChecksumMismatch(t *testing.T) {
-	server := newClientUpdateServer(t, []byte("tampered executable"), strings.Repeat("0", sha256.Size*2), "v1.2.4")
+	payload := zipClientExecutable(t, []byte("tampered executable"))
+	server := newClientUpdateServer(t, payload, strings.Repeat("0", sha256.Size*2), "v1.2.4")
 	configureClientUpdateServer(t, server)
 
 	executable := filepath.Join(t.TempDir(), "codex-remote-agent.exe")
@@ -96,19 +100,41 @@ func TestStageClientUpdateReportsReleaseRequestFailure(t *testing.T) {
 
 func TestClientReleaseAssetsRequiresBothExpectedFiles(t *testing.T) {
 	_, _, err := clientReleaseAssets([]githubClientReleaseAsset{{
-		Name: clientReleaseAssetName, BrowserDownloadURL: "https://example.invalid/client.exe", Size: 1,
+		Name: clientReleaseArchiveName, BrowserDownloadURL: "https://example.invalid/client.zip", Size: 1,
 	}})
 	if err == nil {
 		t.Fatal("release without checksum was accepted")
 	}
 }
 
+func TestExtractClientExecutableRejectsNestedEntry(t *testing.T) {
+	var buffer bytes.Buffer
+	writer := zip.NewWriter(&buffer)
+	entry, err := writer.Create("nested/" + clientReleaseExecutableName)
+	if err != nil {
+		t.Fatalf("create nested zip entry: %v", err)
+	}
+	if _, err := entry.Write([]byte("not accepted")); err != nil {
+		t.Fatalf("write nested zip entry: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+	archivePath := filepath.Join(t.TempDir(), "client.zip")
+	if err := os.WriteFile(archivePath, buffer.Bytes(), 0o600); err != nil {
+		t.Fatalf("write archive: %v", err)
+	}
+	if err := extractClientExecutable(archivePath, filepath.Join(t.TempDir(), "client.next.exe")); err == nil {
+		t.Fatal("nested executable entry was accepted")
+	}
+}
+
 func TestParseClientChecksumRequiresExpectedFile(t *testing.T) {
 	digest := strings.Repeat("a", sha256.Size*2)
-	if _, err := parseClientChecksum([]byte(digest+"  other.exe\n"), clientReleaseAssetName); err == nil {
+	if _, err := parseClientChecksum([]byte(digest+"  other.zip\n"), clientReleaseArchiveName); err == nil {
 		t.Fatal("checksum for another file was accepted")
 	}
-	parsed, err := parseClientChecksum([]byte(digest+" *"+clientReleaseAssetName+"\n"), clientReleaseAssetName)
+	parsed, err := parseClientChecksum([]byte(digest+" *"+clientReleaseArchiveName+"\n"), clientReleaseArchiveName)
 	if err != nil || parsed != digest {
 		t.Fatalf("valid checksum was rejected: checksum=%q err=%v", parsed, err)
 	}
@@ -123,21 +149,38 @@ func newClientUpdateServer(t *testing.T, payload []byte, checksum, tag string) *
 			release := githubClientRelease{
 				TagName: tag,
 				Assets: []githubClientReleaseAsset{
-					{Name: clientReleaseAssetName, BrowserDownloadURL: server.URL + "/client.exe", Size: int64(len(payload))},
-					{Name: clientReleaseChecksumName, BrowserDownloadURL: server.URL + "/client.exe.sha256", Size: int64(len(checksum) + len(clientReleaseAssetName) + 3)},
+					{Name: clientReleaseArchiveName, BrowserDownloadURL: server.URL + "/client.zip", Size: int64(len(payload))},
+					{Name: clientReleaseChecksumName, BrowserDownloadURL: server.URL + "/client.zip.sha256", Size: int64(len(checksum) + len(clientReleaseArchiveName) + 3)},
 				},
 			}
 			_ = json.NewEncoder(w).Encode(release)
-		case "/client.exe":
+		case "/client.zip":
 			_, _ = w.Write(payload)
-		case "/client.exe.sha256":
-			_, _ = w.Write([]byte(checksum + "  " + clientReleaseAssetName + "\n"))
+		case "/client.zip.sha256":
+			_, _ = w.Write([]byte(checksum + "  " + clientReleaseArchiveName + "\n"))
 		default:
 			http.NotFound(w, request)
 		}
 	}))
 	t.Cleanup(server.Close)
 	return server
+}
+
+func zipClientExecutable(t *testing.T, executable []byte) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	writer := zip.NewWriter(&buffer)
+	entry, err := writer.Create(clientReleaseExecutableName)
+	if err != nil {
+		t.Fatalf("create zip entry: %v", err)
+	}
+	if _, err := entry.Write(executable); err != nil {
+		t.Fatalf("write zip entry: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+	return buffer.Bytes()
 }
 
 func configureClientUpdateServer(t *testing.T, server *httptest.Server) {

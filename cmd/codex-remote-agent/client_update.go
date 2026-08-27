@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
@@ -19,8 +20,9 @@ import (
 
 const (
 	defaultClientReleaseLatestURL = "https://api.github.com/repos/ayflying/codex_link/releases/latest"
-	clientReleaseAssetName        = "codex-remote-agent-windows-amd64.exe"
-	clientReleaseChecksumName     = clientReleaseAssetName + ".sha256"
+	clientReleaseArchiveName      = "codex-remote-agent-windows-amd64.zip"
+	clientReleaseExecutableName   = "codex-remote-agent.exe"
+	clientReleaseChecksumName     = clientReleaseArchiveName + ".sha256"
 	clientUpdateMaxBytes          = 200 * 1024 * 1024
 	clientChecksumMaxBytes        = 16 * 1024
 	clientReleaseMaxBytes         = 512 * 1024
@@ -186,14 +188,14 @@ func clientReleaseAssets(assets []githubClientReleaseAsset) (githubClientRelease
 	var checksum githubClientReleaseAsset
 	for _, asset := range assets {
 		switch asset.Name {
-		case clientReleaseAssetName:
+		case clientReleaseArchiveName:
 			executable = asset
 		case clientReleaseChecksumName:
 			checksum = asset
 		}
 	}
 	if executable.BrowserDownloadURL == "" || executable.Size <= 0 || executable.Size > clientUpdateMaxBytes {
-		return githubClientReleaseAsset{}, githubClientReleaseAsset{}, errors.New("最新客户端发布缺少有效的 Windows x64 可执行文件")
+		return githubClientReleaseAsset{}, githubClientReleaseAsset{}, errors.New("最新客户端发布缺少有效的 Windows x64 压缩包")
 	}
 	if checksum.BrowserDownloadURL == "" || checksum.Size <= 0 || checksum.Size > clientChecksumMaxBytes {
 		return githubClientReleaseAsset{}, githubClientReleaseAsset{}, errors.New("最新客户端发布缺少有效的 SHA-256 校验文件")
@@ -214,7 +216,7 @@ func fetchClientChecksum(asset githubClientReleaseAsset) (string, error) {
 	if len(content) > clientChecksumMaxBytes {
 		return "", errors.New("客户端校验文件过大")
 	}
-	return parseClientChecksum(content, clientReleaseAssetName)
+	return parseClientChecksum(content, clientReleaseArchiveName)
 }
 
 func parseClientChecksum(content []byte, expectedFileName string) (string, error) {
@@ -253,7 +255,7 @@ func downloadClientAsset(asset githubClientReleaseAsset, pendingPath, expectedCh
 		return errors.New("客户端更新文件过大")
 	}
 	directory := filepath.Dir(pendingPath)
-	temporary, err := os.CreateTemp(directory, ".codex-link-client-update-*")
+	temporary, err := os.CreateTemp(directory, ".codex-link-client-update-*.zip")
 	if err != nil {
 		return fmt.Errorf("创建客户端更新临时文件失败: %w", err)
 	}
@@ -280,10 +282,64 @@ func downloadClientAsset(asset githubClientReleaseAsset, pendingPath, expectedCh
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("保存客户端更新失败: %w", err)
 	}
+	return extractClientExecutable(temporaryPath, pendingPath)
+}
+
+func extractClientExecutable(archivePath, pendingPath string) error {
+	archive, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return fmt.Errorf("打开客户端更新压缩包失败: %w", err)
+	}
+	defer archive.Close()
+	var entry *zip.File
+	for _, candidate := range archive.File {
+		if candidate.Name == clientReleaseExecutableName {
+			entry = candidate
+			break
+		}
+	}
+	if entry == nil || entry.FileInfo().IsDir() || entry.UncompressedSize64 == 0 || entry.UncompressedSize64 > clientUpdateMaxBytes {
+		return errors.New("客户端更新压缩包缺少有效的可执行文件")
+	}
+	reader, err := entry.Open()
+	if err != nil {
+		return fmt.Errorf("读取客户端更新压缩包失败: %w", err)
+	}
+	directory := filepath.Dir(pendingPath)
+	temporary, err := os.CreateTemp(directory, ".codex-link-client-executable-*")
+	if err != nil {
+		_ = reader.Close()
+		return fmt.Errorf("创建客户端更新文件失败: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	cleanup := func() {
+		_ = reader.Close()
+		_ = temporary.Close()
+		_ = os.Remove(temporaryPath)
+	}
+	written, err := io.Copy(temporary, io.LimitReader(reader, clientUpdateMaxBytes+1))
+	if err != nil {
+		cleanup()
+		return fmt.Errorf("提取客户端更新失败: %w", err)
+	}
+	if err := reader.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("读取客户端更新失败: %w", err)
+	}
+	if written != int64(entry.UncompressedSize64) || written > clientUpdateMaxBytes {
+		cleanup()
+		return errors.New("客户端更新可执行文件大小无效")
+	}
+	if err := temporary.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("保存客户端更新失败: %w", err)
+	}
 	if err := os.Remove(pendingPath); err != nil && !os.IsNotExist(err) {
+		_ = os.Remove(temporaryPath)
 		return fmt.Errorf("替换旧客户端更新文件失败: %w", err)
 	}
 	if err := os.Rename(temporaryPath, pendingPath); err != nil {
+		_ = os.Remove(temporaryPath)
 		return fmt.Errorf("保存客户端更新文件失败: %w", err)
 	}
 	return nil

@@ -13,7 +13,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  CLIENT_ASSET: codex-remote-agent-windows-amd64.exe
+  CLIENT_EXECUTABLE: codex-remote-agent.exe
+  CLIENT_ASSET: codex-remote-agent-windows-amd64.zip
 
 jobs:
   build-and-release:
@@ -51,7 +52,9 @@ jobs:
           mkdir -p dist
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath \
             -ldflags "-s -w -H=windowsgui -X main.clientVersion=$VERSION -X main.clientRevision=$GITHUB_SHA" \
-            -o "dist/$CLIENT_ASSET" ./cmd/codex-remote-agent
+            -o "dist/$CLIENT_EXECUTABLE" ./cmd/codex-remote-agent
+          (cd dist && zip -q -j "$CLIENT_ASSET" "$CLIENT_EXECUTABLE")
+          rm "dist/$CLIENT_EXECUTABLE"
           sha256sum "dist/$CLIENT_ASSET" > "dist/$CLIENT_ASSET.sha256"
 
       - name: 创建或更新 GitHub Release
