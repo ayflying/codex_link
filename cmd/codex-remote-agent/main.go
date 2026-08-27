@@ -571,16 +571,39 @@ func (b *Bridge) startProcess() error {
 
 	go b.readStdout(stdout)
 	go b.readStderr(stderr)
-	go func() {
-		_ = cmd.Wait()
+	go func(process *exec.Cmd) {
+		_ = process.Wait()
 		b.mu.Lock()
-		b.cmd = nil
-		b.stdin = nil
-		b.initialized = false
+		isCurrentProcess := b.cmd == process
+		if isCurrentProcess {
+			b.cmd = nil
+			b.stdin = nil
+			b.initialized = false
+		}
 		b.mu.Unlock()
-		b.emit("error", map[string]interface{}{"message": "Codex app-server exited"})
-	}()
+		if isCurrentProcess {
+			b.emit("error", map[string]interface{}{"message": "Codex app-server exited"})
+		}
+	}(cmd)
 	return nil
+}
+
+// The bridge owns this app-server process exclusively. Stop it after releasing
+// a thread so its writer lease cannot remain visible to Codex Desktop.
+func (b *Bridge) stopAppServer() {
+	b.mu.Lock()
+	process := b.cmd
+	stdin := b.stdin
+	b.cmd = nil
+	b.stdin = nil
+	b.initialized = false
+	b.mu.Unlock()
+	if stdin != nil {
+		_ = stdin.Close()
+	}
+	if process != nil && process.Process != nil {
+		_ = process.Process.Kill()
+	}
 }
 
 func (b *Bridge) readStdout(reader io.Reader) {
@@ -878,7 +901,7 @@ func (b *Bridge) ResumeThread(threadID string) (Session, error) {
 		return Session{}, err
 	}
 	settings := b.store.Settings()
-	result, err := b.request("thread/resume", withRuntimeOptions(map[string]interface{}{
+	result, err := b.request("thread/resume", withThreadRuntimeOptions(map[string]interface{}{
 		"threadId":              threadID,
 		"developerInstructions": developerInstructions(settings),
 	}, settings))
@@ -977,13 +1000,10 @@ func (b *Bridge) releaseThreadLocked() error {
 		turnID := b.activeTurnID
 		b.mu.Unlock()
 		if turnID != "" {
-			if _, err := b.request("turn/interrupt", map[string]interface{}{"threadId": threadID, "turnId": turnID}); err != nil {
-				return fmt.Errorf("停止 Codex 对话失败: %w", err)
-			}
+			_, _ = b.request("turn/interrupt", map[string]interface{}{"threadId": threadID, "turnId": turnID})
 		}
-		if _, err := b.request("thread/unsubscribe", map[string]interface{}{"threadId": threadID}); err != nil {
-			return fmt.Errorf("释放 Codex 对话失败: %w", err)
-		}
+		_, _ = b.request("thread/unsubscribe", map[string]interface{}{"threadId": threadID})
+		b.stopAppServer()
 	}
 	b.mu.Lock()
 	if b.codexThreadID == threadID || (b.session != nil && b.session.ID == threadID) {
@@ -1086,7 +1106,7 @@ func (b *Bridge) clearSessionState(sessionID string) {
 
 func (b *Bridge) startCodexThread(cwd string) error {
 	settings := b.store.Settings()
-	params := withRuntimeOptions(map[string]interface{}{
+	params := withThreadRuntimeOptions(map[string]interface{}{
 		"cwd":                   cwd,
 		"developerInstructions": developerInstructions(settings),
 	}, settings)
@@ -1123,7 +1143,7 @@ func (b *Bridge) SendMessage(text, sessionID string, attachments []Attachment) e
 	threadID := b.codexThreadID
 	b.mu.Unlock()
 	settings := b.store.Settings()
-	params := withRuntimeOptions(map[string]interface{}{
+	params := withTurnRuntimeOptions(map[string]interface{}{
 		"threadId": threadID,
 		"input":    input,
 	}, settings)
@@ -1564,6 +1584,18 @@ func parseTokenUsage(value interface{}) *TokenUsage {
 }
 
 func main() {
+	if isClientUpdateHelperMode() {
+		if err := applyClientUpdateHelper(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "客户端自动更新失败: %v\n", err)
+		}
+		return
+	}
+	if updated, err := maybeUpdateClient(); err != nil {
+		fmt.Fprintf(os.Stderr, "检查客户端更新失败，将继续启动: %v\n", err)
+	} else if updated {
+		fmt.Fprintln(os.Stderr, "已下载新版客户端，正在自动重启")
+		return
+	}
 	root := workingRoot()
 	cwd := getenv("CODEX_CWD", root)
 	dataDir := getenv("DATA_DIR", defaultRemoteAgentDataDir(root))
@@ -1812,11 +1844,20 @@ func developerInstructions(settings AppSettings) string {
 	return strings.Join(parts, "\n")
 }
 
-func withRuntimeOptions(params map[string]interface{}, settings AppSettings) map[string]interface{} {
+func withThreadRuntimeOptions(params map[string]interface{}, settings AppSettings) map[string]interface{} {
 	settings = normalizeSettings(settings)
 	params["approvalPolicy"] = settings.ApprovalMode
 	if settings.ApprovalMode == "never" {
 		params["sandbox"] = "danger-full-access"
+	}
+	return params
+}
+
+func withTurnRuntimeOptions(params map[string]interface{}, settings AppSettings) map[string]interface{} {
+	settings = normalizeSettings(settings)
+	params["approvalPolicy"] = settings.ApprovalMode
+	if settings.ApprovalMode == "never" {
+		params["sandboxPolicy"] = map[string]interface{}{"type": "dangerFullAccess"}
 	}
 	return params
 }

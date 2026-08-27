@@ -261,7 +261,7 @@ func (a *remoteAgent) connectAndServe() error {
 		"deviceId":   a.config.DeviceID,
 		"deviceName": a.config.DeviceName,
 		"platform":   runtime.GOOS,
-		"version":    "1.0.0",
+		"version":    clientVersion,
 	})
 	if err := a.syncThreads(); err != nil {
 		a.send("error", "", "", map[string]string{"message": "同步本机 Codex 对话失败: " + err.Error()})

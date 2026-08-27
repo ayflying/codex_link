@@ -151,21 +151,29 @@ docker compose up -d --pull always
 http://<服务端地址>:18787
 ```
 
-## 版本与镜像发布
+## 版本、客户端与镜像发布
 
-根目录 `VERSION` 是镜像版本号，格式为 `主版本.次版本.修订号`。启用本地 Git hook 后，每次提交前会自动将修订号加一；首次启用执行：
+根目录 `VERSION` 是客户端和 relay 的统一版本号，格式为 `主版本.次版本.修订号`。启用本地 Git hook 后，每次提交前会自动将修订号加一；首次启用执行：
 
 ```powershell
 .\scripts\install-git-hooks.ps1
 ```
 
-初始基线版本为 `0.2.3`，之后每次提交会自动递增修订号；提交完成后还会自动在配置的远程构建服务器上构建并推送版本标签和 `latest` 标签。首次手动发布或补发镜像时执行：
+服务器镜像 CI 会在每次推送到 `main` 后自动构建并推送版本标签和 `latest` 标签。需要正式发布客户端时，再为包含目标改动的提交创建并推送与 `VERSION` 一致的标签，例如：
 
 ```powershell
-.\scripts\publish-relay.ps1
+$version = (Get-Content VERSION -Raw).Trim()
+git tag "v$version"
+git push origin main --follow-tags
 ```
 
-脚本使用通过 `-Remote`、`CODEX_LINK_BUILD_SERVER` 或本地 Git 配置指定的远程构建服务器，并复用该服务器上的 Docker/GHCR 登录状态；也可以通过 `CODEX_LINK_GHCR_TOKEN` 临时登录 GHCR。为让提交钩子自动发布而不把服务器地址写入仓库，可执行 `git config --local codex-link.build-server root@<构建服务器>`。脚本会推送 `ghcr.io/ayflying/codex_link:<VERSION>` 和 `ghcr.io/ayflying/codex_link:latest`。Compose 默认使用 `latest`；需要固定或跳转版本时，将 `docker-compose.yml` 中的镜像标签改为对应版本号。临时不发布镜像时设置 `CODEX_LINK_SKIP_IMAGE_PUBLISH=1`。
+客户端发布 CI 只监听 `vX.Y.Z` 标签，在 GitHub Runner 上测试并交叉编译 Windows x64 客户端，创建同名 GitHub Release，上传 `codex-remote-agent-windows-amd64.exe` 及其 `.sha256` 文件。服务器镜像 CI 独立监听推送到 `main` 的代码，在 GitHub Runner 上构建并推送 `ghcr.io/ayflying/codex_link:<VERSION>` 和 `ghcr.io/ayflying/codex_link:latest`。两条 CI 都不依赖本地机器或远程构建服务器。Compose 默认使用 `latest`；需要固定或回滚版本时，将 `docker-compose.yml` 中的镜像标签改为对应版本号后再部署。CI 只上传产物，不会自动修改生产服务器；服务器仍需执行：
+
+```bash
+docker compose up -d --pull always
+```
+
+`scripts\publish-relay.ps1` 和 `scripts\package-remote.ps1` 仅作为 GitHub Actions 不可用时的手动兼容路径；正式发布不需要配置远程构建服务器。
 
 MySQL 只通过 Compose 内部网络提供给 relay，不对外暴露端口。首次注册完成后，建议在 `.env` 中设置 `ALLOW_REGISTRATION=false`，再执行一次：
 
@@ -177,7 +185,9 @@ docker compose up -d --pull always
 
 ## 构建和登录客户端
 
-客户端交叉编译使用通过参数或环境变量指定的远程服务器：
+正式客户端请从 GitHub Releases 下载 `codex-remote-agent-windows-amd64.exe`。客户端启动时会检查最新正式 Release；发现更高版本后下载校验、自动替换并按原启动参数重启。GitHub 不可访问、下载失败或校验失败不会阻止当前客户端启动。
+
+保留以下远程打包命令用于离线手动交付：
 
 ```powershell
 $env:CODEX_LINK_BUILD_SERVER = "root@your-build-host"

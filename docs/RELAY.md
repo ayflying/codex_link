@@ -54,19 +54,21 @@ docker compose up -d --pull always
 
 ## 版本与镜像标签
 
-仓库根目录的 `VERSION` 保存三段式版本号，初始基线为 `0.2.3`。本地首次使用时执行：
+仓库根目录的 `VERSION` 保存客户端和 relay 共用的三段式版本号，初始基线为 `0.2.3`。本地首次使用时执行：
 
 ```powershell
 .\scripts\install-git-hooks.ps1
 ```
 
-Git hook 会在每次提交前自动递增修订号，例如 `0.2.3` 到 `0.2.4`；提交完成后还会自动在配置的远程构建服务器上构建并推送版本标签和 `latest` 标签：
+Git hook 会在每次提交前自动递增修订号，例如 `0.2.3` 到 `0.2.4`。每次推送到 `main` 后，镜像 CI 会自动构建并推送服务器镜像。要发布客户端时，为包含目标改动的提交创建并推送与 `VERSION` 一致的标签：
 
 ```powershell
-.\scripts\publish-relay.ps1
+$version = (Get-Content VERSION -Raw).Trim()
+git tag "v$version"
+git push origin main --follow-tags
 ```
 
-脚本使用通过 `-Remote` 或 `CODEX_LINK_BUILD_SERVER` 指定的远程构建服务器，并复用该服务器上的 Docker/GHCR 登录状态；如需临时登录，可通过 `CODEX_LINK_GHCR_TOKEN` 传入，但不要将 Token 写入仓库。Compose 默认使用 `latest`；需要回滚或跳转版本时，把镜像改为 `ghcr.io/ayflying/codex_link:0.2.3` 等具体标签后重新部署。设置 `CODEX_LINK_SKIP_IMAGE_PUBLISH=1` 可跳过某次自动发布。
+客户端发布 CI 只监听 `vX.Y.Z` 标签，在 GitHub Runner 上测试并交叉编译 Windows x64 客户端，创建同名 GitHub Release，发布 exe 与 SHA-256 校验文件。镜像 CI 独立监听推送到 `main` 的代码，在 GitHub Runner 上构建并推送 `ghcr.io/ayflying/codex_link:<VERSION>` 与 `ghcr.io/ayflying/codex_link:latest`。两条 CI 都不依赖本地机器或远程构建服务器。Compose 默认使用 `latest`；需要回滚或跳转版本时，把镜像改为 `ghcr.io/ayflying/codex_link:0.2.3` 等具体标签后重新部署。CI 不会自动操作生产主机，仍需手动执行 `docker compose up -d --pull always`。`scripts\publish-relay.ps1` 和 `scripts\package-remote.ps1` 仅作为 GitHub Actions 不可用时的手动兼容路径。
 
 账号、Token、设备、会话和事件保存在 MySQL volume `mysql_data`，服务端中转的文件保存在 Docker volume `data`。P2P 模式下文件直接写入 agent 的本地 `data-remote-agent/uploads`，不会经过 relay。新数据库从空数据开始，不会导入旧的 `relay-store.json`。服务端不保存本机 Codex/CCS/API Key。
 
@@ -114,7 +116,9 @@ ports:
 
 ## 构建客户端
 
-开发电脑执行：
+正式客户端从 GitHub Releases 下载 `codex-remote-agent-windows-amd64.exe`。客户端每次启动都会检查最新正式 Release；只有版本更高、exe 下载完成且 SHA-256 校验通过时才会替换自身并以原参数重启。GitHub 不可用、下载失败或校验失败时会继续运行当前版本。
+
+以下命令保留用于离线手动交付：
 
 ```powershell
 .\scripts\package-remote.ps1

@@ -1,0 +1,73 @@
+name: 发布 Windows 客户端
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: client-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CLIENT_ASSET: codex-remote-agent-windows-amd64.exe
+
+jobs:
+  build-and-release:
+    name: 编译并发布客户端
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: version
+        name: 校验发布标签
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '\r\n' < VERSION)"
+          tag_version="${GITHUB_REF_NAME#v}"
+          [[ "$GITHUB_REF_NAME" == "v"* ]]
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$tag_version" == "$version" ]]
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 测试客户端
+        run: go test ./cmd/codex-remote-agent
+
+      - name: 交叉编译 Windows x64 客户端
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath \
+            -ldflags "-s -w -H=windowsgui -X main.clientVersion=$VERSION -X main.clientRevision=$GITHUB_SHA" \
+            -o "dist/$CLIENT_ASSET" ./cmd/codex-remote-agent
+          sha256sum "dist/$CLIENT_ASSET" > "dist/$CLIENT_ASSET.sha256"
+
+      - name: 创建或更新 GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          assets=("dist/$CLIENT_ASSET" "dist/$CLIENT_ASSET.sha256")
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "${assets[@]}" \
+              --title "Codex Link 客户端 v$VERSION" \
+              --generate-notes \
+              --repo "$GITHUB_REPOSITORY"
+          fi

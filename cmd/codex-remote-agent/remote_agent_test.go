@@ -298,6 +298,31 @@ func TestReleaseThreadUnsubscribesCurrentWriter(t *testing.T) {
 	if bridge.CurrentSession() != nil {
 		t.Fatal("released thread remains attached")
 	}
+	if bridge.cmd != nil {
+		t.Fatal("released thread keeps the app-server process alive")
+	}
+}
+
+func TestReleaseThreadStillDropsWriterAfterReleaseRequestsFail(t *testing.T) {
+	store := NewStore(t.TempDir())
+	const threadID = "thread-release-failure"
+	bridge := &Bridge{
+		cmd:           &exec.Cmd{},
+		initialized:   true,
+		codexThreadID: threadID,
+		activeTurnID:  "turn-release-failure",
+		session:       &Session{ID: threadID, Status: "running"},
+		store:         store,
+		requestHook: func(_ string, _ interface{}) (interface{}, error) {
+			return nil, errors.New("app-server connection closed")
+		},
+	}
+	if err := bridge.ReleaseThread(threadID); err != nil {
+		t.Fatalf("release must finish local cleanup after app-server failure: %v", err)
+	}
+	if bridge.CurrentSession() != nil || bridge.cmd != nil {
+		t.Fatalf("release failure left the writer attached: session=%#v cmd=%#v", bridge.CurrentSession(), bridge.cmd)
+	}
 }
 
 func TestStoreEventsBeforePagesHistoryWithoutBroadcastingLocalHydration(t *testing.T) {
@@ -460,6 +485,53 @@ func TestWithModelOption(t *testing.T) {
 	params = withModelOption(map[string]interface{}{}, AppSettings{Model: "  "})
 	if _, ok := params["model"]; ok {
 		t.Fatalf("empty model should not be sent: %#v", params)
+	}
+}
+
+func TestRuntimeOptionsUseProtocolSpecificCompleteAccessPolicies(t *testing.T) {
+	settings := AppSettings{ApprovalMode: "never"}
+	threadParams := withThreadRuntimeOptions(map[string]interface{}{}, settings)
+	if threadParams["approvalPolicy"] != "never" || threadParams["sandbox"] != "danger-full-access" {
+		t.Fatalf("unexpected thread runtime options: %#v", threadParams)
+	}
+	if _, ok := threadParams["sandboxPolicy"]; ok {
+		t.Fatalf("thread runtime options must not use turn sandboxPolicy: %#v", threadParams)
+	}
+
+	turnParams := withTurnRuntimeOptions(map[string]interface{}{}, settings)
+	policy, ok := turnParams["sandboxPolicy"].(map[string]interface{})
+	if !ok || policy["type"] != "dangerFullAccess" || turnParams["approvalPolicy"] != "never" {
+		t.Fatalf("unexpected turn runtime options: %#v", turnParams)
+	}
+	if _, ok := turnParams["sandbox"]; ok {
+		t.Fatalf("turn runtime options must not use legacy thread sandbox: %#v", turnParams)
+	}
+}
+
+func TestBridgeSendMessageUsesTurnSandboxPolicy(t *testing.T) {
+	store := NewStore(t.TempDir())
+	store.UpdateSettings(AppSettings{ApprovalMode: "never"})
+	bridge := &Bridge{
+		store:         store,
+		session:       &Session{ID: "thread-full-access", Status: "idle"},
+		codexThreadID: "thread-full-access",
+		requestHook: func(method string, params interface{}) (interface{}, error) {
+			if method != "turn/start" {
+				t.Fatalf("unexpected app-server request: %s", method)
+			}
+			body := params.(map[string]interface{})
+			policy, ok := body["sandboxPolicy"].(map[string]interface{})
+			if !ok || policy["type"] != "dangerFullAccess" || body["approvalPolicy"] != "never" {
+				t.Fatalf("turn/start did not receive complete-access policy: %#v", body)
+			}
+			if _, ok := body["sandbox"]; ok {
+				t.Fatalf("turn/start received unsupported legacy sandbox field: %#v", body)
+			}
+			return map[string]interface{}{"turn": map[string]interface{}{"id": "turn-full-access"}}, nil
+		},
+	}
+	if err := bridge.SendMessage("执行任务", "thread-full-access", nil); err != nil {
+		t.Fatalf("send message: %v", err)
 	}
 }
 
