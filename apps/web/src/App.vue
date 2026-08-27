@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
+import csharp from "highlight.js/lib/languages/csharp";
 import css from "highlight.js/lib/languages/css";
 import diff from "highlight.js/lib/languages/diff";
 import dockerfile from "highlight.js/lib/languages/dockerfile";
@@ -119,8 +120,50 @@ import {
 } from "./api";
 import { P2PRemoteError, P2PTransport } from "./p2p";
 
-for (const [name, language] of Object.entries({ bash, css, diff, dockerfile, go, javascript, json, markdown, powershell, python, sql, typescript, xml, yaml })) {
+for (const [name, language] of Object.entries({ bash, csharp, css, diff, dockerfile, go, javascript, json, markdown, powershell, python, sql, typescript, xml, yaml })) {
   hljs.registerLanguage(name, language);
+}
+
+const codeLanguageAliases: Record<string, string> = {
+  "c#": "csharp",
+  cs: "csharp",
+  dotnet: "csharp",
+  html: "xml",
+  js: "javascript",
+  md: "markdown",
+  ps: "powershell",
+  ps1: "powershell",
+  pwsh: "powershell",
+  py: "python",
+  shell: "bash",
+  sh: "bash",
+  ts: "typescript",
+  yml: "yaml",
+  zsh: "bash"
+};
+
+const codeLanguageLabels: Record<string, string> = {
+  bash: "Shell",
+  csharp: "C#",
+  css: "CSS",
+  diff: "Diff",
+  dockerfile: "Dockerfile",
+  go: "Go",
+  javascript: "JavaScript",
+  json: "JSON",
+  markdown: "Markdown",
+  powershell: "PowerShell",
+  python: "Python",
+  sql: "SQL",
+  typescript: "TypeScript",
+  xml: "HTML/XML",
+  yaml: "YAML"
+};
+
+function resolveCodeLanguage(info: string) {
+  const requestedLanguage = info.trim().split(/\s+/)[0]?.toLowerCase() || "";
+  const language = codeLanguageAliases[requestedLanguage] || requestedLanguage;
+  return hljs.getLanguage(language) ? language : "";
 }
 
 const markdownRenderer = new MarkdownIt({
@@ -128,12 +171,13 @@ const markdownRenderer = new MarkdownIt({
   html: false,
   linkify: true,
   highlight(code, info) {
-    const language = info.trim().split(/\s+/)[0]?.toLowerCase() || "";
-    const highlighted = language && hljs.getLanguage(language)
+    const language = resolveCodeLanguage(info);
+    const highlighted = language
       ? hljs.highlight(code, { language, ignoreIllegals: true }).value
       : escapeHtml(code);
+    const label = language ? codeLanguageLabels[language] || language : "代码";
     const languageClass = language ? ` language-${escapeAttr(language)}` : "";
-    return `<pre class="code-block"><code class="hljs${languageClass}">${highlighted}</code></pre>`;
+    return `<pre class="code-block" data-language="${escapeAttr(label)}"><code class="hljs${languageClass}">${highlighted}</code></pre>`;
   }
 });
 

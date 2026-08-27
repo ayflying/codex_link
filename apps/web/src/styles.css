@@ -726,13 +726,16 @@ button:disabled { cursor: not-allowed; opacity: 0.5; transform: none !important;
 .markdown-body code, .markdown-body pre { font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace; }
 .markdown-body :not(pre) > code { padding: 1px 5px; border-radius: 4px; background: var(--chat-trace); color: var(--ink-soft); font-size: 0.92em; }
 .markdown-body pre, pre { margin: 0; font-size: 12px; line-height: 1.58; }
-.markdown-body pre { max-width: 100%; margin-bottom: 12px; padding: 12px; overflow-x: auto; border: 1px solid var(--chat-trace-line); border-radius: 7px; background: var(--chat-trace); color: var(--ink-soft); white-space: pre; word-break: normal; overflow-wrap: normal; tab-size: 2; }
-.markdown-body pre code { display: block; min-width: max-content; word-break: normal; overflow-wrap: normal; }
+.markdown-body pre.code-block { max-width: 100%; margin-bottom: 12px; padding: 0; overflow-x: auto; border: 1px solid var(--chat-trace-line); border-radius: 7px; background: var(--chat-trace); color: var(--ink-soft); white-space: pre; word-break: normal; overflow-wrap: normal; tab-size: 2; }
+.markdown-body pre.code-block::before { content: attr(data-language); height: 30px; display: flex; align-items: center; padding: 0 12px; border-bottom: 1px solid var(--chat-trace-line); background: color-mix(in srgb, var(--surface-soft) 72%, var(--chat-trace)); color: var(--muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; font-weight: 650; white-space: normal; }
+.markdown-body pre.code-block code { display: block; min-width: max-content; padding: 12px; word-break: normal; overflow-wrap: normal; }
+.markdown-body > pre { max-width: 100%; margin-bottom: 12px; padding: 12px; overflow-x: auto; border: 1px solid var(--chat-trace-line); border-radius: 7px; background: var(--chat-trace); color: var(--ink-soft); white-space: pre; word-break: normal; overflow-wrap: normal; tab-size: 2; }
+.markdown-body pre:not(.code-block) code { display: block; min-width: max-content; word-break: normal; overflow-wrap: normal; }
 .markdown-body .hljs-comment, .markdown-body .hljs-quote { color: var(--code-comment); }
 .markdown-body .hljs-keyword, .markdown-body .hljs-selector-tag, .markdown-body .hljs-literal, .markdown-body .hljs-meta .hljs-keyword { color: var(--code-keyword); }
 .markdown-body .hljs-string, .markdown-body .hljs-regexp, .markdown-body .hljs-symbol, .markdown-body .hljs-template-variable { color: var(--code-string); }
 .markdown-body .hljs-number, .markdown-body .hljs-params, .markdown-body .hljs-attr, .markdown-body .hljs-attribute { color: var(--code-number); }
-.markdown-body .hljs-function .hljs-title, .markdown-body .hljs-title.function_, .markdown-body .hljs-title.class_ { color: var(--code-function); }
+.markdown-body .hljs-function .hljs-title, .markdown-body .hljs-title, .markdown-body .hljs-title.function_, .markdown-body .hljs-title.class_ { color: var(--code-function); }
 .markdown-body .hljs-built_in, .markdown-body .hljs-type, .markdown-body .hljs-variable, .markdown-body .hljs-name { color: var(--code-title); }
 .markdown-body .hljs-subst, .markdown-body .hljs-property, .markdown-body .hljs-selector-class, .markdown-body .hljs-selector-id { color: var(--code-variable); }
 .empty-state { min-height: 240px; display: grid; place-items: center; align-content: center; gap: 12px; padding: 24px; color: var(--muted); text-align: center; }
